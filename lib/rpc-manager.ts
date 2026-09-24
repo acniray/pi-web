@@ -39,6 +39,12 @@ import {
   SUBAGENT_CONTROL_TOOL_NAMES,
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
+import {
+  createSubagentSkillPreloadExtension,
+  subagentSkillsOverride,
+  subagentSkillPromptText,
+} from "./subagent-skills";
+import { composeSubagentExactPrompt } from "./subagent-prompt";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
@@ -1688,9 +1694,7 @@ const SUBAGENT_CONTROLLER = createSubagentController({
   getSession: (sessionId) => getRegistry().get(sessionId),
   registerSession: (inner, options) => {
     const wrapper = new AgentSessionWrapper(inner, {
-      ...(options?.exactSystemPrompt !== undefined
-        ? { exactSystemPrompt: () => options.exactSystemPrompt! }
-        : {}),
+      ...(options?.exactSystemPrompt ? { exactSystemPrompt: options.exactSystemPrompt } : {}),
       chatOnly: options?.chatOnly,
       suppressCompletionNotifications: true,
     });
@@ -2027,8 +2031,19 @@ export async function startRpcSession(
     // extension: it may read the session's context files, which exist only
     // after the session is created, so the getter is filled in below.
     const exactSystemPromptRef: { current?: () => string } = {};
+    const skillPreloadRef: { current?: () => string } = {};
     const exactSystemPromptExtension = createExactSystemPromptExtension(() => exactSystemPromptRef.current?.());
+    const skillPreloadExtension = createSubagentSkillPreloadExtension(() => skillPreloadRef.current?.());
     const usesExactSystemPrompt = chatOnly || subagentResources?.exactSystemPrompt !== undefined;
+    const usesSubagentSkillPreload = Boolean(
+      subagentResources?.loadSkills
+      && subagentResources.skills !== undefined
+      && subagentResources.exactSystemPrompt === undefined
+    );
+    const subagentExtensionFactories = [
+      ...(usesExactSystemPrompt ? [exactSystemPromptExtension] : []),
+      ...(usesSubagentSkillPreload ? [skillPreloadExtension] : []),
+    ];
     const services = await createAgentSessionServices({
       cwd: sessionCwd,
       agentDir,
@@ -2037,6 +2052,9 @@ export async function startRpcSession(
         ? {
             noExtensions: !subagentResources.loadExtensions,
             noSkills: !subagentResources.loadSkills,
+            ...(subagentResources.loadSkills && subagentResources.skills !== undefined
+              ? { skillsOverride: subagentSkillsOverride(subagentResources.skills) }
+              : {}),
             noPromptTemplates: true,
             noThemes: true,
             noContextFiles: true,
@@ -2047,7 +2065,9 @@ export async function startRpcSession(
                 }
               : {}),
             appendSystemPrompt: subagentResources.appendSystemPrompt,
-            ...(usesExactSystemPrompt ? { extensionFactories: [exactSystemPromptExtension] } : {}),
+            ...(subagentExtensionFactories.length > 0
+              ? { extensionFactories: subagentExtensionFactories }
+              : {}),
           }
         : chatOnly
           ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, extensionFactories: [exactSystemPromptExtension] }
@@ -2067,6 +2087,13 @@ export async function startRpcSession(
           },
       ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
     });
+    if (usesSubagentSkillPreload && subagentResources) {
+      skillPreloadRef.current = () => subagentSkillPromptText({
+        skills: services.resourceLoader.getSkills().skills,
+        scope: subagentResources.skills,
+        tools: subagentResources.tools,
+      });
+    }
     const scope = await resolveVisibleModels(
       services.modelRuntime,
       services.settingsManager.getEnabledModels(),
@@ -2132,7 +2159,23 @@ export async function startRpcSession(
     }
 
     const exactSystemPrompt = subagentResources?.exactSystemPrompt !== undefined
-      ? () => subagentResources.exactSystemPrompt!
+      ? () => composeSubagentExactPrompt(
+          // A restored replace-mode profile resolves its skills from this loader
+          // on every run, exactly like a fresh one, so a resumed session does not
+          // keep serving the skill text that was current when it first ran.
+          // `loadSkills` alone selects replace mode here: an exact prompt is only
+          // persisted for chat-only and replace profiles, and chat-only requires
+          // skills to be off (see buildSubagentPromptPlan), so the fresh path's
+          // `promptMode === "replace"` gate has nothing else to distinguish.
+          subagentResources.exactSystemPrompt!,
+          subagentResources.loadSkills
+            ? subagentSkillPromptText({
+                skills: inner.resourceLoader.getSkills().skills,
+                scope: subagentResources.skills,
+                tools: subagentResources.tools,
+              })
+            : "",
+        )
       : chatOnly
         ? subagentResources
           ? () => subagentResources.appendSystemPrompt[0] ?? ""

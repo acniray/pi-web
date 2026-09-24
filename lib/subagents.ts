@@ -27,6 +27,8 @@ export interface SubagentProfile {
   tools: string[];
   extensionTools?: string[];
   loadSkills: boolean;
+  /** Skill names restricting which skills load; undefined loads every discovered skill. */
+  skills?: string[];
   loadExtensions: boolean;
   model?: string;
   thinking?: ThinkingLevel;
@@ -62,6 +64,7 @@ export interface SubagentResourceSnapshot {
   appendSystemPrompt: string[];
   tools: string[];
   loadSkills: boolean;
+  skills?: string[];
   loadExtensions: boolean;
   exactSystemPrompt?: string;
 }
@@ -70,6 +73,7 @@ export interface SubagentSessionResources {
   appendSystemPrompt: string[];
   tools: string[];
   loadSkills: boolean;
+  skills?: string[];
   loadExtensions: boolean;
   exactSystemPrompt?: string;
 }
@@ -229,6 +233,29 @@ function parseExtensionToolSelectors(value: unknown): string[] {
   return [...new Set(rawToolValues(value).filter((tool) => tool.toLowerCase().startsWith("ext:")))];
 }
 
+/**
+ * Skill names a profile's `skills:` list scopes loading to.
+ *
+ * `all` / `*` / `true` express the load switch, not a scope, so they yield
+ * undefined (every discovered skill). The `none` / `"false"` spellings ask for no
+ * skills, which is a scope of its own: reading them as unbounded would make the
+ * two spellings do exactly the opposite of each other. A YAML boolean is not a
+ * scope at all — it reaches `loadSkills` through resourceBoolean instead — and an
+ * explicit empty list stays an empty scope, the way pi-subagents reads
+ * `skills: []`.
+ *
+ * A skill genuinely named `none` is unreachable by name; the keyword wins here as
+ * it does in `parseTools()`.
+ */
+function parseSkillScope(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) && typeof value !== "string") return undefined;
+  const names = stringList(value);
+  if (names.some((name) => /^(none|false)$/i.test(name))) return [];
+  const scope = [...new Set(names.filter((name) => !/^(true|all|\*)$/i.test(name)))];
+  if (scope.length > 0) return scope;
+  return Array.isArray(value) && value.length === 0 ? [] : undefined;
+}
+
 /** Read existing frontmatter without allowing malformed metadata to be overwritten. */
 function readStoredFrontmatter(filePath: string): Record<string, unknown> {
   if (!existsSync(filePath)) return {};
@@ -261,9 +288,30 @@ function composeToolsField(tools: string[], storedTools: unknown): string {
 }
 
 /**
- * Keep the alias in step with the boolean the UI owns. A boolean (or a "none" /
- * "all" spelling) is ours to rewrite; a whitelist such as `extensions:
- * pi-advisor-flow` expresses scoping the UI cannot show, so it stays as authored.
+ * Persist an explicit skill scope without widening it back to a boolean.
+ * With no scope, keep the skills alias in step with load_skills.
+ */
+function writeScopeAlias(
+  frontmatter: Record<string, unknown>,
+  alias: string,
+  storedValue: unknown,
+  storedScope: readonly string[] | undefined,
+  scope: readonly string[] | undefined,
+  flag: boolean,
+): void {
+  if (scope !== undefined) {
+    if (!sameScope(scope, storedScope)) frontmatter[alias] = [...scope];
+    return;
+  }
+  const owned = storedValue === undefined
+    || typeof storedValue === "boolean"
+    || (typeof storedValue === "string" && OWNED_ALIAS_VALUES.has(storedValue.trim().toLowerCase()));
+  if (owned) frontmatter[alias] = flag;
+}
+
+/**
+ * Keep the extensions alias in step with the boolean this UI owns without
+ * rewriting a hand-authored whitelist that belongs to another runtime.
  */
 function syncFlagAlias(
   frontmatter: Record<string, unknown>,
@@ -275,6 +323,21 @@ function syncFlagAlias(
     || typeof storedValue === "boolean"
     || (typeof storedValue === "string" && OWNED_ALIAS_VALUES.has(storedValue.trim().toLowerCase()));
   if (owned) frontmatter[alias] = flag;
+}
+
+function sameScope(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  return a !== undefined && b !== undefined
+    && a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+/** Deduplicated, trimmed scope names; undefined stays undefined (unbounded). */
+function normalizeScope(value: readonly string[] | undefined, lower: boolean): string[] | undefined {
+  if (value === undefined) return undefined;
+  const names = value
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => (lower ? name.toLowerCase() : name));
+  return [...new Set(names)];
 }
 function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfile | null {
   try {
@@ -289,6 +352,12 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
     const disallowedExtensionTools = new Set(parseExtensionToolSelectors(data?.disallowed_tools).map((tool) => tool.toLowerCase()));
     const extensionTools = parseExtensionToolSelectors(data?.tools)
       .filter((tool) => !disallowedExtensionTools.has(tool.toLowerCase()));
+    const skillScope = parseSkillScope(data?.skills);
+    const loadSkills = typeof data?.load_skills === "boolean"
+      ? data.load_skills
+      : skillScope !== undefined
+        ? skillScope.length > 0
+        : resourceBoolean(data?.skills, false);
     return {
       name,
       displayName: stringValue(data?.display_name) ?? name,
@@ -296,7 +365,8 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
       systemPrompt: rest.trim(),
       tools: tools.filter((tool) => !disallowedTools.has(tool)),
       ...(extensionTools.length > 0 ? { extensionTools } : {}),
-      loadSkills: resourceBoolean(data?.load_skills ?? data?.skills, false),
+      loadSkills,
+      ...(skillScope !== undefined ? { skills: skillScope } : {}),
       loadExtensions: resourceBoolean(data?.load_extensions ?? data?.extensions, extensionTools.length > 0),
       ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
       ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
@@ -427,6 +497,8 @@ export function saveSubagentProfile(
   const model = profile.model?.trim() || undefined;
   const loadSkills = profile.loadSkills === true;
   const loadExtensions = profile.loadExtensions === true;
+  // Skill names are matched exactly, so preserve their case while trimming and deduplicating.
+  const skillScope = normalizeScope(profile.skills, false);
   const promptMode = profile.promptMode === "replace" ? "replace" : "append";
   const dir = assertWritableProfileDirectory(cwd, scope);
   mkdirSync(dir, { recursive: true });
@@ -446,7 +518,7 @@ export function saveSubagentProfile(
     run_in_background: profile.runInBackground,
     prompt_mode: promptMode,
   };
-  syncFlagAlias(managed, "skills", stored.skills, loadSkills);
+  writeScopeAlias(managed, "skills", stored.skills, parseSkillScope(stored.skills), skillScope, loadSkills);
   syncFlagAlias(managed, "extensions", stored.extensions, loadExtensions);
   if (model) managed.model = model;
   if (profile.thinking) managed.thinking = profile.thinking;
@@ -471,6 +543,7 @@ export function saveSubagentProfile(
     ...(extensionTools.length > 0 ? { extensionTools } : {}),
     loadSkills,
     loadExtensions,
+    ...(skillScope !== undefined ? { skills: skillScope } : {}),
     ...(model ? { model } : { model: undefined }),
     ...(maxTurns ? { maxTurns } : { maxTurns: undefined }),
     promptMode,
@@ -514,6 +587,23 @@ function subagentMetadataData(entries: readonly SessionEntry[]): ValidSubagentMe
   return data as ValidSubagentMetadataData;
 }
 
+/**
+ * A scope list a persisted snapshot recorded.
+ *
+ * Absent means the snapshot predates the field (or recorded no scope). A value
+ * that is present but malformed must not fall back to "unbounded": the child was
+ * scoped when it ran, and restoring it wider than it ran is a privilege change,
+ * not a repair. Refuse it the way an unreadable settings file is refused.
+ */
+function readSnapshotScope(snapshot: Record<string, unknown>, key: string, label: string): string[] | undefined {
+  const value = snapshot[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.trim().length > 0)) {
+    throw new Error(`Invalid subagent ${label} scope`);
+  }
+  return value as string[];
+}
+
 /** Restore the isolated prompt and tool scope used by a persisted subagent session. */
 export function readSubagentSessionResources(
   entries: readonly SessionEntry[],
@@ -521,6 +611,7 @@ export function readSubagentSessionResources(
   const data = subagentMetadataData(entries);
   if (!data) return null;
   const snapshot = data.resourceSnapshot;
+  const skills = isRecord(snapshot) ? readSnapshotScope(snapshot, "skills", "skill") : undefined;
   const loadSkills = isRecord(snapshot) && snapshot.loadSkills === true;
   const loadExtensions = isRecord(snapshot) && snapshot.loadExtensions === true;
   if (
@@ -532,14 +623,16 @@ export function readSubagentSessionResources(
     && snapshot.tools.every((item) =>
       typeof item === "string"
       && item.length > 0
-      && !SUBAGENT_CONTROL_TOOLS.has(item)
-      && (BUILTIN_TOOLS.has(item) || loadExtensions)
+      && (BUILTIN_TOOLS.has(item) || SUBAGENT_CONTROL_TOOLS.has(item) || loadExtensions)
     )
   ) {
     return {
       appendSystemPrompt: [...snapshot.appendSystemPrompt],
-      tools: [...new Set(snapshot.tools)],
+      // Old children may have persisted a now-reserved extension tool. Keep
+      // their isolation policy rather than returning null (ordinary startup).
+      tools: [...new Set(snapshot.tools.filter((tool) => !SUBAGENT_CONTROL_TOOLS.has(tool)))],
       loadSkills,
+      ...(skills !== undefined ? { skills: [...skills] } : {}),
       loadExtensions,
       ...(typeof snapshot.exactSystemPrompt === "string" ? { exactSystemPrompt: snapshot.exactSystemPrompt } : {}),
     };
