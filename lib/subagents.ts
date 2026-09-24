@@ -13,7 +13,7 @@ import type { SessionEntry, SubagentSessionStatus } from "./types";
 export const SUBAGENT_META_TYPE = "pi-web:subagent";
 export const SUBAGENT_STATUS_TYPE = "pi-web:subagent-status";
 export const SUBAGENT_RESULT_TYPE = "pi-web:subagent-result";
-export const SUBAGENT_CONTROL_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"] as const;
+export const SUBAGENT_CONTROL_TOOL_NAMES = ["Agent", "SubagentWorkflow", "get_subagent_result", "steer_subagent"] as const;
 
 export type SubagentStatus = SubagentSessionStatus;
 export type SubagentScope = "builtin" | "global" | "workspace" | "project";
@@ -30,6 +30,8 @@ export interface SubagentProfile {
   /** Skill names restricting which skills load; undefined loads every discovered skill. */
   skills?: string[];
   loadExtensions: boolean;
+  /** Exact discovered extension names/package sources; undefined is unbounded, [] loads none. */
+  extensionScope?: string[];
   model?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
@@ -60,6 +62,7 @@ export interface SubagentMetadata {
 }
 
 export interface SubagentResourceSnapshot {
+  extensionScope?: string[];
   version: 1;
   appendSystemPrompt: string[];
   tools: string[];
@@ -70,6 +73,7 @@ export interface SubagentResourceSnapshot {
 }
 
 export interface SubagentSessionResources {
+  extensionScope?: string[];
   appendSystemPrompt: string[];
   tools: string[];
   loadSkills: boolean;
@@ -309,22 +313,6 @@ function writeScopeAlias(
   if (owned) frontmatter[alias] = flag;
 }
 
-/**
- * Keep the extensions alias in step with the boolean this UI owns without
- * rewriting a hand-authored whitelist that belongs to another runtime.
- */
-function syncFlagAlias(
-  frontmatter: Record<string, unknown>,
-  alias: string,
-  storedValue: unknown,
-  flag: boolean,
-): void {
-  const owned = storedValue === undefined
-    || typeof storedValue === "boolean"
-    || (typeof storedValue === "string" && OWNED_ALIAS_VALUES.has(storedValue.trim().toLowerCase()));
-  if (owned) frontmatter[alias] = flag;
-}
-
 function sameScope(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
   return a !== undefined && b !== undefined
     && a.length === b.length && a.every((name, index) => name === b[index]);
@@ -353,6 +341,7 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
     const extensionTools = parseExtensionToolSelectors(data?.tools)
       .filter((tool) => !disallowedExtensionTools.has(tool.toLowerCase()));
     const skillScope = parseSkillScope(data?.skills);
+    const extensionScope = parseExtensionScope(data?.extensions);
     const loadSkills = typeof data?.load_skills === "boolean"
       ? data.load_skills
       : skillScope !== undefined
@@ -368,6 +357,7 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
       loadSkills,
       ...(skillScope !== undefined ? { skills: skillScope } : {}),
       loadExtensions: resourceBoolean(data?.load_extensions ?? data?.extensions, extensionTools.length > 0),
+      ...(extensionScope !== undefined ? { extensionScope } : {}),
       ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
       ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
       ...(maxTurnsValue && maxTurnsValue > 0 ? { maxTurns: maxTurnsValue } : {}),
@@ -497,8 +487,9 @@ export function saveSubagentProfile(
   const model = profile.model?.trim() || undefined;
   const loadSkills = profile.loadSkills === true;
   const loadExtensions = profile.loadExtensions === true;
-  // Skill names are matched exactly, so preserve their case while trimming and deduplicating.
+  // Skill names are exact; extension selectors are case-insensitive.
   const skillScope = normalizeScope(profile.skills, false);
+  const extensionScope = normalizeScope(profile.extensionScope, true);
   const promptMode = profile.promptMode === "replace" ? "replace" : "append";
   const dir = assertWritableProfileDirectory(cwd, scope);
   mkdirSync(dir, { recursive: true });
@@ -519,7 +510,7 @@ export function saveSubagentProfile(
     prompt_mode: promptMode,
   };
   writeScopeAlias(managed, "skills", stored.skills, parseSkillScope(stored.skills), skillScope, loadSkills);
-  syncFlagAlias(managed, "extensions", stored.extensions, loadExtensions);
+  writeScopeAlias(managed, "extensions", stored.extensions, parseExtensionScope(stored.extensions), extensionScope, loadExtensions);
   if (model) managed.model = model;
   if (profile.thinking) managed.thinking = profile.thinking;
   if (maxTurns) managed.max_turns = maxTurns;
@@ -544,6 +535,7 @@ export function saveSubagentProfile(
     loadSkills,
     loadExtensions,
     ...(skillScope !== undefined ? { skills: skillScope } : {}),
+    ...(extensionScope !== undefined ? { extensionScope } : {}),
     ...(model ? { model } : { model: undefined }),
     ...(maxTurns ? { maxTurns } : { maxTurns: undefined }),
     promptMode,
@@ -612,6 +604,7 @@ export function readSubagentSessionResources(
   if (!data) return null;
   const snapshot = data.resourceSnapshot;
   const skills = isRecord(snapshot) ? readSnapshotScope(snapshot, "skills", "skill") : undefined;
+  const extensionScope = isRecord(snapshot) ? readSnapshotScope(snapshot, "extensionScope", "extension") : undefined;
   const loadSkills = isRecord(snapshot) && snapshot.loadSkills === true;
   const loadExtensions = isRecord(snapshot) && snapshot.loadExtensions === true;
   if (
@@ -634,10 +627,51 @@ export function readSubagentSessionResources(
       loadSkills,
       ...(skills !== undefined ? { skills: [...skills] } : {}),
       loadExtensions,
+      ...(extensionScope !== undefined ? { extensionScope: [...extensionScope] } : {}),
       ...(typeof snapshot.exactSystemPrompt === "string" ? { exactSystemPrompt: snapshot.exactSystemPrompt } : {}),
     };
   }
   return null;
+}
+
+/**
+ * The extension names a profile's `extensions:` field scopes loading to.
+ *
+ * `all` / `*` / `true` express the load switch, not a scope, so they yield
+ * undefined (every discovered extension); `none` / `"false"` ask for none, which
+ * is a scope of its own. A YAML boolean is not a scope at all — it reaches
+ * `loadExtensions` through resourceBoolean instead — and an explicit empty list
+ * stays empty. Names are lowercased because extension selectors match
+ * case-insensitively (skill names, by contrast, are matched exactly).
+ *
+ * Scope parsing is separate from the load switch: an explicit
+ * `load_extensions: false` always wins over any scope.
+ */
+export function parseExtensionScope(value: unknown): string[] | undefined {
+  if (value === undefined || value === true) return undefined;
+  if (value === false) return [];
+  const names = stringList(value).map((name) => name.toLowerCase());
+  if (names.some((name) => /^(none|false)$/.test(name))) return [];
+  if (names.some((name) => /^(all|true|\*)$/.test(name))) return undefined;
+  return [...new Set(names)];
+}
+
+/** Match resource identity, not generic loader directories or the 'local' source label. */
+export function extensionSelectorNames(extension: { path: string; sourceInfo?: { source?: string } }): Set<string> {
+  const segments = extension.path.replaceAll("\\", "/").split("/");
+  const stem = (segments.at(-1) ?? "").replace(/\.(?:[cm]?js|tsx?)$/i, "");
+  const ownName = stem === "index" ? segments.at(-2) ?? "" : stem;
+  const names = new Set<string>();
+  if (ownName && !/^(src|index|extensions|local)$/i.test(ownName)) names.add(ownName.toLowerCase());
+  const source = extension.sourceInfo?.source;
+  if (source && !/^(local|auto|cli|inline)$/i.test(source)) {
+    names.add(source.toLowerCase());
+    if (source.startsWith("npm:")) {
+      const packageName = source.slice(4).match(/^(@[^/]+\/[^@]+|[^@]+)(?:@.*)?$/)?.[1];
+      if (packageName) names.add(packageName.toLowerCase());
+    }
+  }
+  return names;
 }
 
 export function withSubagentExtensionTools(
@@ -656,19 +690,13 @@ export function selectSubagentExtensionTools(
 ): string[] {
   const wanted = selectors.map((selector) => selector.slice(4).toLowerCase());
   return [...extensions].flatMap((extension) => {
-    const pathName = extension.path.replaceAll("\\", "/").split("/").at(-2) ?? extension.path;
-    const sourceName = (extension.sourceInfo?.source ?? "").replace(/^npm:/, "");
-    const extensionNames = new Set([pathName.toLowerCase(), sourceName.toLowerCase()]);
-    const selected = wanted.some((selector) => {
-      if (selector === "*") return true;
-      const [extensionName, toolName] = selector.split("/", 2);
-      return extensionNames.has(extensionName) && (!toolName || extension.tools.has(toolName));
-    });
-    if (!selected) return [];
+    const extensionNames = extensionSelectorNames(extension);
     return [...extension.tools.keys()].filter((toolName) => wanted.some((selector) => {
-      if (selector === "*" || selector.endsWith("/*")) return selector === "*" || extensionNames.has(selector.slice(0, -2));
-      const [extensionName, selectedTool] = selector.split("/", 2);
-      return extensionNames.has(extensionName) && (!selectedTool || selectedTool === toolName);
+      if (selector === "*" || extensionNames.has(selector)) return true;
+      const slash = selector.lastIndexOf("/");
+      if (slash < 0 || !extensionNames.has(selector.slice(0, slash))) return false;
+      const selectedTool = selector.slice(slash + 1);
+      return selectedTool === "*" || selectedTool === toolName;
     }));
   });
 }

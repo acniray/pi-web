@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { createAgentSessionFromServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
 import { existsSync, realpathSync, writeFileSync } from "fs";
@@ -14,6 +14,7 @@ import {
 } from "./project-command-env";
 import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
+import { createScopedAgentSessionServices } from "./subagent-extension-scope";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
@@ -2044,7 +2045,7 @@ export async function startRpcSession(
       ...(usesExactSystemPrompt ? [exactSystemPromptExtension] : []),
       ...(usesSubagentSkillPreload ? [skillPreloadExtension] : []),
     ];
-    const services = await createAgentSessionServices({
+    const services = await createScopedAgentSessionServices({
       cwd: sessionCwd,
       agentDir,
       settingsManager,
@@ -2086,7 +2087,7 @@ export async function startRpcSession(
             extensionsOverride: (base) => preferUserBashExtension(preferPiWebSubagentExtension(base)),
           },
       ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
-    });
+    }, subagentResources?.extensionScope);
     if (usesSubagentSkillPreload && subagentResources) {
       skillPreloadRef.current = () => subagentSkillPromptText({
         skills: services.resourceLoader.getSkills().skills,

@@ -1,7 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
-  createAgentSessionServices,
   getAgentDir,
   initTheme,
   SessionManager,
@@ -40,6 +39,7 @@ import {
 import { createExactSystemPromptExtension } from "./exact-system-prompt";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
 import { projectTrustReloadOptions } from "./project-trust";
+import { createScopedAgentSessionServices } from "./subagent-extension-scope";
 import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
 import { SubagentQueue } from "./subagent-queue";
@@ -233,7 +233,7 @@ export function createSubagentController(
           : []),
       ];
       if (!chatOnly) initTheme();
-      const services = await createAgentSessionServices({
+      const services = await createScopedAgentSessionServices({
         cwd: childCwd,
         agentDir,
         modelRuntime: parentModelRuntime,
@@ -262,7 +262,7 @@ export function createSubagentController(
         ...((profile.loadExtensions || profile.loadSkills)
           ? { resourceLoaderReloadOptions: projectTrustReloadOptions(childCwd, agentDir) }
           : {}),
-      });
+      }, profile.extensionScope);
       const extensionToolNames = profile.loadExtensions
         ? profile.extensionTools?.length
           ? selectSubagentExtensionTools(services.resourceLoader.getExtensions().extensions, profile.extensionTools)
@@ -309,6 +309,7 @@ export function createSubagentController(
           loadSkills: profile.loadSkills,
           ...(profile.skills ? { skills: [...profile.skills] } : {}),
           loadExtensions: profile.loadExtensions,
+          ...(profile.extensionScope !== undefined ? { extensionScope: [...profile.extensionScope] } : {}),
           // The profile body only. Skill text is resolved from disk on every run,
           // so a resumed session follows edits to SKILL.md and the session file
           // does not carry a copy of every skill it loaded.
