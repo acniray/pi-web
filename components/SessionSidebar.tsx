@@ -1984,7 +1984,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     isRunning={familySessions.some((session) => runningSessionIds.has(session.id))}
                     isUnread={familySessions.some((session) => unreadSessionIds.has(session.id))}
                     onClick={() => archiveSelectionMode
-                      ? toggleArchiveSelection(family.root.id)
+                      ? (!family.root.transient && !familySessions.some((session) => runningSessionIds.has(session.id))
+                          ? toggleArchiveSelection(family.root.id)
+                          : undefined)
                       : handleSelectSessionFromList(family.root)}
                     onRenamed={loadSessions}
                     onDeleted={(id) => {
