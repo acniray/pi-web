@@ -2291,6 +2291,12 @@ function SessionItem({
   onClick,
   onRenamed,
   onDeleted,
+  archiveAvailable = false,
+  archiveSelectionMode = false,
+  archiveSelected = false,
+  archiveBusy = false,
+  onToggleArchive,
+  onArchive,
   depth = 0,
   hasChildren = false,
   collapsed = false,
@@ -2303,6 +2309,12 @@ function SessionItem({
   onClick: () => void;
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
+  archiveAvailable?: boolean;
+  archiveSelectionMode?: boolean;
+  archiveSelected?: boolean;
+  archiveBusy?: boolean;
+  onToggleArchive?: () => void;
+  onArchive?: () => void;
   depth?: number;
   hasChildren?: boolean;
   collapsed?: boolean;
@@ -2408,7 +2420,7 @@ function SessionItem({
   return (
     <div
       onClick={confirmDelete || renaming ? undefined : onClick}
-      onContextMenu={confirmDelete || renaming ? undefined : handleContextMenu}
+      onContextMenu={confirmDelete || renaming || archiveSelectionMode ? undefined : handleContextMenu}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}
       style={{
@@ -2420,10 +2432,14 @@ function SessionItem({
         cursor: confirmDelete || renaming ? "default" : "pointer",
         background: confirmDelete
           ? "rgba(239,68,68,0.06)"
-          : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
+          : archiveSelectionMode && archiveSelected
+            ? "var(--bg-selected)"
+            : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
         borderLeft: confirmDelete
           ? "2px solid #ef4444"
-          : isSelected ? "2px solid var(--accent)" : "2px solid transparent",
+          : archiveSelectionMode && archiveSelected
+            ? "2px solid var(--accent)"
+            : isSelected ? "2px solid var(--accent)" : "2px solid transparent",
         transition: "background 0.1s",
         opacity: deleting ? 0.5 : 1,
         gap: 6,
@@ -2498,6 +2514,40 @@ function SessionItem({
       ) : (
         /* ── Normal view ── */
         <>
+          {archiveSelectionMode && (
+            <button
+              type="button"
+              aria-pressed={archiveSelected}
+              disabled={isRunning || session.transient || archiveBusy}
+              title={isRunning ? t("sidebar.archiveRunningDisabled") : t("sidebar.selectForArchive")}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isRunning && !session.transient && !archiveBusy) onToggleArchive?.();
+              }}
+              style={{
+                width: 20, height: 20, padding: 0, flexShrink: 0,
+                display: "grid", placeItems: "center",
+                border: "none", background: "none",
+                color: archiveSelected ? "var(--accent)" : "var(--text-dim)",
+                cursor: isRunning || session.transient || archiveBusy ? "default" : "pointer",
+                opacity: isRunning || session.transient ? 0.45 : 1,
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 14, height: 14, borderRadius: 3,
+                  border: archiveSelected ? "1px solid var(--accent)" : "1px solid var(--border)",
+                  background: archiveSelected ? "var(--accent)" : "transparent",
+                  color: "var(--bg)",
+                  display: "grid", placeItems: "center",
+                  fontSize: 10, lineHeight: 1,
+                }}
+              >
+                {archiveSelected ? "✓" : ""}
+              </span>
+            </button>
+          )}
           {/* Subagent indicator for child sessions */}
           {depth > 0 && (
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -2572,7 +2622,7 @@ function SessionItem({
           )}
 
           {/* Action buttons — shown on hover */}
-          {hovered && !session.transient && (
+          {hovered && !session.transient && !archiveSelectionMode && (
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
               <button
                 onClick={startRename}
@@ -2600,6 +2650,45 @@ function SessionItem({
                   <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
                 </svg>
               </button>
+              {archiveAvailable && (
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!isRunning && !archiveBusy) onArchive?.();
+                  }}
+                  disabled={isRunning || archiveBusy}
+                  title={isRunning ? t("sidebar.archiveRunningDisabled") : t("sidebar.archive")}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 32, height: 32, padding: 0,
+                    background: "var(--bg-hover)", border: "1px solid var(--border)",
+                    borderRadius: 7,
+                    color: isRunning || archiveBusy ? "var(--text-dim)" : "var(--text-muted)",
+                    cursor: isRunning || archiveBusy ? "default" : "pointer",
+                    flexShrink: 0,
+                    opacity: isRunning || archiveBusy ? 0.5 : 1,
+                    transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                  }}
+                  onMouseEnter={(event) => {
+                    if (isRunning || archiveBusy) return;
+                    event.currentTarget.style.background = "var(--bg-selected)";
+                    event.currentTarget.style.color = "var(--accent)";
+                    event.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.background = "var(--bg-hover)";
+                    event.currentTarget.style.color = isRunning || archiveBusy ? "var(--text-dim)" : "var(--text-muted)";
+                    event.currentTarget.style.borderColor = "var(--border)";
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 6h18" />
+                    <path d="M5 6l1 14h12l1-14" />
+                    <path d="M8 3h8l1 3H7l1-3z" />
+                    <path d="M9 11h6" />
+                  </svg>
+                </button>
+              )}
               <button
                 onClick={handleDeleteClick}
                 title={t("sidebar.deleteWithShiftClick")}
