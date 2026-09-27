@@ -44,3 +44,13 @@ test("deleting the current session forgets its tab memory", () => {
   assert.match(body, /clearTabOpenSession\(sessionId\);/);
   assert.ok(body.indexOf("clearTabOpenSession(sessionId)") < body.indexOf("setSelectedSession(null)"));
 });
+
+
+test("archiving the open session reuses local session-close state without deleting it", () => {
+  const start = source.indexOf("  const handleSessionsArchived = useCallback");
+  const end = source.indexOf("  const handleOpenFile = useCallback", start);
+  const body = source.slice(start, end);
+  assert.match(body, /sessionIds\.includes\(activeId\)/);
+  assert.match(body, /handleSessionDeleted\(activeId\)/);
+  assert.doesNotMatch(body, /fetch\(|DELETE/);
+});
