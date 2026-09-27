@@ -135,7 +135,7 @@ export async function POST(req: Request) {
       archivedSessionIds,
       failedSessionIds,
       notifications: result.notifications,
-    }, { status: failedSessionIds.length === 0 ? 200 : 409 });
+    });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
