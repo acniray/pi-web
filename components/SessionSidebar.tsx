@@ -1146,6 +1146,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const result = await archiveSessionsWithExtension(cwd, rootIds);
       const affectedIds = result.archivedSessionIds.flatMap((id) => familyMembers.get(id) ?? [id]);
       if (affectedIds.length > 0) onSessionArchived?.(affectedIds);
+      if (result.failedSessionIds.length > 0) {
+        setArchiveError(t("sidebar.archivePartialFailed", { count: result.failedSessionIds.length }));
+      }
       setArchiveSelectedIds(new Set());
       setArchiveSelectionMode(false);
       await loadSessions(false, true);
@@ -1155,7 +1158,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     } finally {
       setArchiveBusy(false);
     }
-  }, [archiveBusy, loadSessions, onSessionArchived, selectedCwd, selectedCwdProp, sessionFamilies]);
+  }, [archiveBusy, loadSessions, onSessionArchived, selectedCwd, selectedCwdProp, sessionFamilies, t]);
 
   const toggleArchiveSelection = useCallback((id: string) => {
     setArchiveSelectedIds((current) => {
