@@ -1030,6 +1030,16 @@ export function AppShell() {
     }
   }, [invalidateWorkspaceRestore, selectedSession, router]);
 
+
+  const handleSessionsArchived = useCallback((sessionIds: string[]) => {
+    invalidateWorkspaceRestore();
+    setRefreshKey((key) => key + 1);
+    const activeId = selectedSession?.id;
+    if (activeId && sessionIds.includes(activeId)) {
+      handleSessionDeleted(activeId);
+    }
+  }, [handleSessionDeleted, invalidateWorkspaceRestore, selectedSession?.id]);
+
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
@@ -1184,6 +1194,7 @@ export function AppShell() {
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
+        onSessionArchived={handleSessionsArchived}
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
