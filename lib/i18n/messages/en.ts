@@ -275,6 +275,7 @@ export const enLocale: LocalePlugin = {
     "sidebar.archiveSelected": "Archive selected",
     "sidebar.archiveSelectedCount": "{count} selected",
     "sidebar.archiveRunningDisabled": "Running sessions cannot be archived",
+    "sidebar.archivePartialFailed": "{count} selected session(s) could not be archived",
     "sidebar.rename": "Rename",
     "sidebar.delete": "Delete",
     "sidebar.deleteWithShiftClick": "Delete (Shift+click to delete without confirmation)",
