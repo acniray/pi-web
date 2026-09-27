@@ -1,6 +1,7 @@
 import type {
   AgentSessionEvent,
   BashOperations,
+  ExtensionCommandContext,
   SessionManager,
   SettingsManager,
   SlashCommandInfo,
@@ -80,9 +81,9 @@ interface ExtensionRunnerLike {
     sourceInfo: SlashCommandInfo["sourceInfo"];
   }>;
   getCommand(name: string): {
-    handler: (args: string, ctx: unknown) => Promise<void>;
+    handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
   } | undefined;
-  createCommandContext(): unknown;
+  createCommandContext(): ExtensionCommandContext;
   emit?(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;
   setUIContext?(uiContext?: unknown, mode?: "tui" | "rpc" | "json" | "print"): void;
 }
