@@ -8,6 +8,8 @@ export interface SubagentSettings {
   /** Built-in profiles switched off, in the spelling the file uses. */
   disabledBuiltIns: string[];
   maxConcurrent: number;
+  /** Persist subagent sessions by default. Per-profile persist_session overrides this. */
+  rememberAgents: boolean;
 }
 
 type StoredSubagentSettings = Record<string, unknown> & {
@@ -15,6 +17,7 @@ type StoredSubagentSettings = Record<string, unknown> & {
   builtInEnabled?: unknown;
   disabledBuiltIns?: unknown;
   maxConcurrent?: unknown;
+  rememberAgents?: unknown;
 };
 
 export const DEFAULT_SUBAGENT_MAX_CONCURRENT = 10;
@@ -51,11 +54,19 @@ function settingsValue(
   builtInEnabled: boolean,
   maxConcurrent: number,
   disabledBuiltIns: string[],
+  rememberAgents: boolean,
 ): SubagentSettings {
-  return Object.defineProperty({ builtInEnabled, disabledBuiltIns }, "maxConcurrent", {
-    value: maxConcurrent,
-    enumerable: false,
-    configurable: true,
+  return Object.defineProperties({ builtInEnabled, disabledBuiltIns }, {
+    maxConcurrent: {
+      value: maxConcurrent,
+      enumerable: false,
+      configurable: true,
+    },
+    rememberAgents: {
+      value: rememberAgents,
+      enumerable: false,
+      configurable: true,
+    },
   }) as SubagentSettings;
 }
 
@@ -80,6 +91,7 @@ export function readSubagentSettings(
     stored.builtInEnabled === true,
     readMaxConcurrent(stored.maxConcurrent),
     readDisabledBuiltIns(stored.disabledBuiltIns),
+    typeof stored.rememberAgents === "boolean" ? stored.rememberAgents : true,
   );
 }
 
@@ -163,6 +175,20 @@ export function writeSubagentMaxConcurrent(
     ...stored,
     version: 1,
     maxConcurrent,
+  }, null, 2));
+  return readSubagentSettings(settingsPath);
+}
+
+export function writeSubagentRememberAgents(
+  rememberAgents: boolean,
+  settingsPath = getSubagentSettingsPath(),
+): SubagentSettings {
+  const stored = readStoredSettings(settingsPath);
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writePrivateFileAtomicSync(settingsPath, JSON.stringify({
+    ...stored,
+    version: 1,
+    rememberAgents,
   }, null, 2));
   return readSubagentSettings(settingsPath);
 }

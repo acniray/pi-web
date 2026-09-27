@@ -89,6 +89,7 @@ function editableProfile(profile: SubagentProfile): EditableProfile {
     ...(profile.maxTurns ? { maxTurns: profile.maxTurns } : {}),
     inheritContext: profile.inheritContext,
     runInBackground: profile.runInBackground,
+    ...(profile.persistSession !== undefined ? { persistSession: profile.persistSession } : {}),
     enabled: profile.enabled,
   };
 }

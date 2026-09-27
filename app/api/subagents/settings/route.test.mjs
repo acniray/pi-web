@@ -33,18 +33,18 @@ function request(body, contentType = "application/json") {
 test("settings route defaults off and persists both switch states", async () => {
   let response = await GET();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10 });
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, rememberAgents: true });
 
   response = await PUT(request({ enabled: true }));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 10 });
+  assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 10, rememberAgents: true });
   assert.deepEqual(
     JSON.parse(await readFile(join(testAgentDir, "agents", "settings.json"), "utf8")),
     { version: 1, builtInEnabled: true },
   );
 
   response = await PUT(request({ enabled: false }));
-  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10 });
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, rememberAgents: true });
 });
 
 test("settings route validates mutations", async () => {
@@ -57,10 +57,28 @@ test("settings route validates mutations", async () => {
   assert.deepEqual(await response.json(), { error: "Content-Type must be application/json" });
 });
 
+test("settings route validates and persists rememberAgents", async () => {
+  let response = await PUT(request({ rememberAgents: false }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, rememberAgents: false });
+  assert.deepEqual(
+    JSON.parse(await readFile(join(testAgentDir, "agents", "settings.json"), "utf8")),
+    { version: 1, rememberAgents: false },
+  );
+
+  response = await PUT(request({ rememberAgents: "no" }));
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "rememberAgents must be a boolean" });
+
+  response = await PUT(request({ rememberAgents: true }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).rememberAgents, true);
+});
+
 test("settings route validates and persists concurrency", async () => {
   let response = await PUT(request({ maxConcurrent: 2 }));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 2 });
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 2, rememberAgents: true });
   response = await PUT(request({ maxConcurrent: 0 }));
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /between 1 and 32/);

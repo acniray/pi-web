@@ -29,6 +29,7 @@ import {
   type SubagentMetadata,
   type SubagentResultMetadata,
   type SubagentRunInfo,
+  type SubagentProfile,
 } from "./subagents";
 import type { SessionEntry } from "./types";
 import { buildSubagentPromptPlan } from "./subagent-prompt";
@@ -36,7 +37,7 @@ import { createExactSystemPromptExtension } from "./exact-system-prompt";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
 import { projectTrustReloadOptions } from "./project-trust";
 import { resolveShellTools } from "./powershell-settings";
-import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
+import { isBuiltInSubagentsEnabled, readSubagentSettings, type SubagentSettings } from "./subagent-settings";
 import { SubagentQueue } from "./subagent-queue";
 import { addWorktree, removeWorktree } from "./worktree";
 import { randomUUID } from "node:crypto";
@@ -125,6 +126,13 @@ function markResultConsumed(sessionId: string): void {
 
 function takeResultConsumed(sessionId: string): boolean {
   return getConsumedSubagentResults().delete(sessionId);
+}
+
+export function shouldPersistSubagentSession(
+  profile: Pick<SubagentProfile, "persistSession">,
+  settings: Pick<SubagentSettings, "rememberAgents">,
+): boolean {
+  return profile.persistSession ?? settings.rememberAgents;
 }
 
 function parseSubagentModel(runtime: ModelRuntime, value: string | undefined) {
@@ -253,9 +261,10 @@ export function createSubagentController(
         settingsManager.getDefaultTools(),
       );
 
-      const sessionManager = isolatedWorktree
+      const persistSession = shouldPersistSubagentSession(profile, readSubagentSettings());
+      const sessionManager = persistSession
         ? SessionManager.create(childCwd, undefined, { parentSession: parent.sessionFile })
-        : SessionManager.create(parent.cwd, undefined, { parentSession: parent.sessionFile });
+        : SessionManager.inMemory(childCwd);
       const createdAt = new Date().toISOString();
       const metadata: SubagentMetadata = {
         version: 1,

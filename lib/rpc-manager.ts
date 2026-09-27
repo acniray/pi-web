@@ -1868,7 +1868,9 @@ export function getRpcSessionInfos(options: { includeTransient?: boolean } = {})
 
     // An ensure_session call creates an idle, empty runtime while the composer
     // loads commands. Do not leak it into history before a prompt is accepted.
-    if (!persisted && !options.includeTransient && (!session.isRunning() || !firstUserMessage)) continue;
+    // Ephemeral built-in subagents are different: their runtime wrapper is the
+    // only catalogue source, so keep them visible for the wrapper's lifetime.
+    if (!persisted && !options.includeTransient && !subagent && (!session.isRunning() || !firstUserMessage)) continue;
 
     const created = header?.timestamp
       ?? entries[0]?.timestamp
