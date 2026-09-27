@@ -15,6 +15,7 @@ import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
 import { SessionSearch } from "./SessionSearch";
+import { archiveSessionsWithExtension, hasSessionArchiveAction } from "@/lib/session-actions";
 
 // Fixed row height for the session list. SessionItem renders at exactly this
 // height, so the list can be windowed (only the visible slice is mounted).
@@ -114,6 +115,7 @@ interface Props {
   onInitialRestoreDone?: () => void;
   refreshKey?: number;
   onSessionDeleted?: (sessionId: string) => void;
+  onSessionArchived?: (sessionIds: string[]) => void;
   selectedCwd?: string | null;
   onCwdChange?: (
     cwd: string | null,
@@ -382,7 +384,7 @@ function PiWebTitle() {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, onSessionArchived, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   // Tracked in a ref only: the version is compared against the polled value to
@@ -476,6 +478,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [listViewportH, setListViewportH] = useState(0);
   const [listScrollTop, setListScrollTop] = useState(0);
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
+  const [archiveAvailable, setArchiveAvailable] = useState(false);
+  const [archiveSelectionMode, setArchiveSelectionMode] = useState(false);
+  const [archiveSelectedIds, setArchiveSelectedIds] = useState<Set<string>>(() => new Set());
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const listScrollRafRef = useRef<number | null>(null);
   const listScrollTopRef = useRef(0);
   const renderedListScrollTopRef = useRef(0);
@@ -548,6 +555,31 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (loadId === sessionLoadIdRef.current) setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const cwd = selectedCwd ?? selectedCwdProp;
+    if (!cwd) {
+      setArchiveAvailable(false);
+      setArchiveSelectionMode(false);
+      setArchiveSelectedIds(new Set());
+      return;
+    }
+
+    const controller = new AbortController();
+    void hasSessionArchiveAction(cwd, controller.signal)
+      .then((available) => {
+        setArchiveAvailable(available);
+        if (!available) {
+          setArchiveSelectionMode(false);
+          setArchiveSelectedIds(new Set());
+        }
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setArchiveAvailable(false);
+      });
+    return () => controller.abort();
+  }, [selectedCwd, selectedCwdProp]);
 
   const initialLoadDone = useRef(false);
   useEffect(() => {
@@ -1088,6 +1120,51 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       : null);
 
   const sessionFamilies = useMemo(() => listSessionFamilies(filteredSessions), [filteredSessions]);
+
+  useEffect(() => {
+    const rootIds = new Set(sessionFamilies.map((family) => family.root.id));
+    setArchiveSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => rootIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [sessionFamilies]);
+
+  const runArchiveAction = useCallback(async (rootIds: readonly string[]) => {
+    const cwd = selectedCwd ?? selectedCwdProp;
+    if (!cwd || rootIds.length === 0 || archiveBusy) return;
+
+    const familyMembers = new Map(
+      sessionFamilies.map((family) => [
+        family.root.id,
+        [family.root.id, ...family.subagents.map((session) => session.id)],
+      ]),
+    );
+
+    setArchiveBusy(true);
+    setArchiveError(null);
+    try {
+      const result = await archiveSessionsWithExtension(cwd, rootIds);
+      const affectedIds = result.archivedSessionIds.flatMap((id) => familyMembers.get(id) ?? [id]);
+      if (affectedIds.length > 0) onSessionArchived?.(affectedIds);
+      setArchiveSelectedIds(new Set());
+      setArchiveSelectionMode(false);
+      await loadSessions(false, true);
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : String(error));
+      await loadSessions(false, true);
+    } finally {
+      setArchiveBusy(false);
+    }
+  }, [archiveBusy, loadSessions, onSessionArchived, selectedCwd, selectedCwdProp, sessionFamilies]);
+
+  const toggleArchiveSelection = useCallback((id: string) => {
+    setArchiveSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const virtualIndices = useMemo(() => getSessionListIndices(
     sessionFamilies.length,
@@ -1778,6 +1855,81 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           overflow: "hidden",
         }}
       >
+        {archiveAvailable && !sessionSearchOpen && (
+          <div style={{
+            minHeight: 34,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--border)",
+            flexShrink: 0,
+          }}>
+            {archiveSelectionMode ? (
+              <>
+                <span style={{ flex: 1, color: "var(--text-dim)", fontSize: 11 }}>
+                  {t("sidebar.archiveSelectedCount", { count: archiveSelectedIds.size })}
+                </span>
+                <button
+                  type="button"
+                  disabled={archiveSelectedIds.size === 0 || archiveBusy}
+                  onClick={() => void runArchiveAction([...archiveSelectedIds])}
+                  style={{
+                    height: 26, padding: "0 9px", borderRadius: 6,
+                    border: "1px solid var(--border)", background: "var(--bg-hover)",
+                    color: archiveSelectedIds.size === 0 || archiveBusy ? "var(--text-dim)" : "var(--text)",
+                    cursor: archiveSelectedIds.size === 0 || archiveBusy ? "default" : "pointer",
+                    fontSize: 11,
+                  }}
+                >
+                  {archiveBusy ? t("sidebar.archiving") : t("sidebar.archiveSelected")}
+                </button>
+                <button
+                  type="button"
+                  disabled={archiveBusy}
+                  onClick={() => {
+                    setArchiveSelectionMode(false);
+                    setArchiveSelectedIds(new Set());
+                    setArchiveError(null);
+                  }}
+                  style={{
+                    height: 26, padding: "0 8px", borderRadius: 6,
+                    border: "none", background: "none", color: "var(--text-muted)",
+                    cursor: archiveBusy ? "default" : "pointer", fontSize: 11,
+                  }}
+                >
+                  {t("sidebar.cancel")}
+                </button>
+              </>
+            ) : (
+              <>
+                <span style={{ flex: 1, color: "var(--text-dim)", fontSize: 11 }}>
+                  {t("sidebar.sessions")}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setArchiveSelectionMode(true);
+                    setArchiveSelectedIds(new Set());
+                    setArchiveError(null);
+                  }}
+                  style={{
+                    height: 26, padding: "0 8px", borderRadius: 6,
+                    border: "none", background: "none", color: "var(--text-muted)",
+                    cursor: "pointer", fontSize: 11,
+                  }}
+                >
+                  {t("sidebar.selectToArchive")}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {archiveError && (
+          <div style={{ padding: "5px 10px", borderBottom: "1px solid var(--border)", color: "#dc2626", fontSize: 11 }}>
+            {archiveError}
+          </div>
+        )}
         <SessionSearch open={sessionSearchOpen} query={sessionSearchQuery} selectedSessionId={selectedSessionId} onSelectSession={handleSelectSessionFromList}>
         <div
           ref={listScrollRef}
@@ -1831,12 +1983,20 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     isSelected={familySessions.some((session) => session.id === selectedSessionId)}
                     isRunning={familySessions.some((session) => runningSessionIds.has(session.id))}
                     isUnread={familySessions.some((session) => unreadSessionIds.has(session.id))}
-                    onClick={() => handleSelectSessionFromList(family.root)}
+                    onClick={() => archiveSelectionMode
+                      ? toggleArchiveSelection(family.root.id)
+                      : handleSelectSessionFromList(family.root)}
                     onRenamed={loadSessions}
                     onDeleted={(id) => {
                       onSessionDeleted?.(id);
                       loadSessions();
                     }}
+                    archiveAvailable={archiveAvailable}
+                    archiveSelectionMode={archiveSelectionMode}
+                    archiveSelected={archiveSelectedIds.has(family.root.id)}
+                    archiveBusy={archiveBusy}
+                    onToggleArchive={() => toggleArchiveSelection(family.root.id)}
+                    onArchive={() => void runArchiveAction([family.root.id])}
                   />
                 </div>
               );
