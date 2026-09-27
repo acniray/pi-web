@@ -275,6 +275,7 @@ export const zhTWLocale: LocalePlugin = {
     "sidebar.archiveSelected": "封存所選",
     "sidebar.archiveSelectedCount": "已選擇 {count} 個",
     "sidebar.archiveRunningDisabled": "執行中的工作階段不能封存",
+    "sidebar.archivePartialFailed": "{count} 個所選工作階段未能封存",
     "sidebar.rename": "重新命名",
     "sidebar.delete": "刪除",
     "sidebar.deleteWithShiftClick": "刪除（按住 Shift 點選可跳過確認）",
