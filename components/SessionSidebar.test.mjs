@@ -120,7 +120,7 @@ test("offers the downstream context-menu hook only on a normal session row", () 
   assert.match(sessionItemSource, /const handleContextMenu[\s\S]*?dispatchSessionRowContextMenu\(\{/);
   assert.match(
     sessionItemSource,
-    /onContextMenu=\{confirmDelete \|\| renaming \? undefined : handleContextMenu\}/,
+    /onContextMenu=\{confirmDelete \|\| renaming \|\| archiveSelectionMode \? undefined : handleContextMenu\}/,
   );
 });
 
@@ -139,7 +139,7 @@ test("lifecycle refreshes bypass the cache while cross-window polling reuses it"
 
 test("does not expose disk-backed actions for transient sessions", () => {
   assert.match(sessionItemSource, /if \(session\.transient\) return;/);
-  assert.match(sessionItemSource, /\{hovered && !session\.transient && \(/);
+  assert.match(sessionItemSource, /\{hovered && !session\.transient && !archiveSelectionMode && \(/);
 });
 
 test("hides subagent rows and aggregates their state into the main session row", () => {
@@ -147,4 +147,30 @@ test("hides subagent rows and aggregates their state into the main session row",
   assert.match(source, /familySessions\.some\(\(session\) => session\.id === selectedSessionId\)/);
   assert.match(source, /familySessions\.some\(\(session\) => runningSessionIds\.has\(session\.id\)\)/);
   assert.doesNotMatch(source, /function SessionTreeItem/);
+});
+
+
+test("archive controls are capability-gated and reuse the extension adapter", () => {
+  assert.match(source, /hasSessionArchiveAction\(cwd, controller\.signal\)/);
+  assert.match(source, /\{archiveAvailable && !sessionSearchOpen && \(/);
+  assert.match(sessionItemSource, /\{archiveAvailable && \(/);
+  assert.match(source, /archiveSessionsWithExtension\(cwd, rootIds\)/);
+  assert.doesNotMatch(sessionItemSource, /fs\.|renameSync|unlinkSync|session-archive/);
+});
+
+test("batch archive is a real selection mode over session families", () => {
+  assert.match(source, /const \[archiveSelectionMode, setArchiveSelectionMode\] = useState\(false\)/);
+  assert.match(source, /const \[archiveSelectedIds, setArchiveSelectedIds\]/);
+  assert.match(source, /archiveSelectedIds\.size/);
+  assert.match(source, /runArchiveAction\(\[\.\.\.archiveSelectedIds\]\)/);
+  assert.match(source, /family\.root\.id,[\s\S]*?family\.subagents\.map/);
+});
+
+test("running or transient session families cannot be selected for archive", () => {
+  assert.match(
+    source,
+    /!family\.root\.transient && !familySessions\.some\(\(session\) => runningSessionIds\.has\(session\.id\)\)/,
+  );
+  assert.match(sessionItemSource, /disabled=\{isRunning \|\| session\.transient \|\| archiveBusy\}/);
+  assert.match(sessionItemSource, /disabled=\{isRunning \|\| archiveBusy\}/);
 });
