@@ -19,7 +19,10 @@ export const dynamic = "force-dynamic";
 function mergeById(disk: readonly SessionInfo[], runtime: readonly SessionInfo[]): SessionInfo[] {
   const byId = new Map<string, SessionInfo>();
   for (const session of disk) byId.set(session.id, session);
-  for (const session of runtime) byId.set(session.id, { ...byId.get(session.id), ...session });
+  for (const session of runtime) {
+    const previous = byId.get(session.id);
+    byId.set(session.id, previous ? { ...previous, ...session } : session);
+  }
   return [...byId.values()];
 }
 
