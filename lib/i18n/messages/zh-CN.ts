@@ -275,6 +275,7 @@ export const zhCNLocale: LocalePlugin = {
     "sidebar.archiveSelected": "归档所选",
     "sidebar.archiveSelectedCount": "已选择 {count} 个",
     "sidebar.archiveRunningDisabled": "运行中的会话不能归档",
+    "sidebar.archivePartialFailed": "{count} 个所选会话未能归档",
     "sidebar.rename": "重命名",
     "sidebar.delete": "删除",
     "sidebar.deleteWithShiftClick": "删除（按住 Shift 点击可跳过确认）",
