@@ -1749,6 +1749,54 @@ export function getRpcSession(sessionId: string): AgentSessionWrapper | undefine
   return getRegistry().get(sessionId);
 }
 
+
+export interface TransientExtensionCommandResult {
+  available: boolean;
+  notifications: Array<{ message: string; type?: "info" | "warning" | "error" }>;
+}
+
+/**
+ * Run an extension command in an isolated transient session.
+ *
+ * This is the bridge used by optional web-native session actions: Pi Web owns
+ * presentation only, while the installed extension remains the single owner of
+ * the mutation semantics. The transient control session is never persisted or
+ * exposed in the sidebar.
+ */
+export async function runTransientExtensionCommand(
+  cwd: string,
+  commandName: string,
+  args = "",
+): Promise<TransientExtensionCommandResult> {
+  const controlKey = `__pi_web_action__${randomUUID()}`;
+  const { session } = await startRpcSession(controlKey, "", cwd);
+  const notifications: TransientExtensionCommandResult["notifications"] = [];
+  const unsubscribe = session.onEvent((event) => {
+    if (event.type !== "extension_ui_request" || event.method !== "notify") return;
+    const message = typeof event.message === "string" ? event.message : "";
+    if (!message) return;
+    const notifyType = event.notifyType;
+    notifications.push({
+      message,
+      ...(notifyType === "info" || notifyType === "warning" || notifyType === "error"
+        ? { type: notifyType }
+        : {}),
+    });
+  });
+
+  try {
+    await session.waitUntilReady();
+    const runner = session.inner.extensionRunner;
+    const command = runner.getCommand(commandName);
+    if (!command) return { available: false, notifications };
+    await command.handler(args, runner.createCommandContext());
+    return { available: true, notifications };
+  } finally {
+    unsubscribe();
+    await session.shutdown();
+  }
+}
+
 export interface SetRpcSessionToolsResult {
   session: AgentSessionWrapper;
   sessionId: string;
