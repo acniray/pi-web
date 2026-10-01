@@ -1,7 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   createAgentSessionFromServices,
-  createAgentSessionServices,
   getAgentDir,
   initTheme,
   SessionManager,
@@ -35,6 +34,7 @@ import type { SessionEntry } from "./types";
 import { buildSubagentPromptPlan } from "./subagent-prompt";
 import { createSubagentSkillsBinding } from "./subagent-skills";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
+import { createScopedAgentSessionServices } from "./subagent-extension-scope";
 import { projectTrustReloadOptions } from "./project-trust";
 import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
@@ -245,7 +245,7 @@ export function createSubagentController(
         exactSystemPrompt: promptPlan.exactSystemPrompt,
       });
       if (!chatOnly) initTheme();
-      const services = await createAgentSessionServices({
+      const services = await createScopedAgentSessionServices({
         cwd: childCwd,
         agentDir,
         modelRuntime: parentModelRuntime,
@@ -267,7 +267,7 @@ export function createSubagentController(
         ...((profile.loadExtensions || profile.loadSkills)
           ? { resourceLoaderReloadOptions: projectTrustReloadOptions(childCwd, agentDir) }
           : {}),
-      });
+      }, profile.extensionScope);
 
       const extensionToolNames = profile.loadExtensions
         ? profile.extensionTools?.length
@@ -304,6 +304,7 @@ export function createSubagentController(
           loadSkills: profile.loadSkills,
           ...(profile.skills !== undefined ? { skills: [...profile.skills] } : {}),
           loadExtensions: profile.loadExtensions,
+          ...(profile.extensionScope !== undefined ? { extensionScope: [...profile.extensionScope] } : {}),
           ...(promptPlan.exactSystemPrompt !== undefined ? { exactSystemPrompt: promptPlan.exactSystemPrompt } : {}),
         },
         ...(isolatedWorktree ? { worktreePath: isolatedWorktree.path, worktreeBranch: isolatedWorktree.branch } : {}),
@@ -494,6 +495,7 @@ export function createSubagentController(
     if (!sessionPath) throw new Error(`Subagent session file not found: ${request.sessionId}`);
     let wrapper = dependencies.getSession(request.sessionId);
     if (!wrapper?.isAlive()) wrapper = await dependencies.reopenSession(request.sessionId, sessionPath);
+    // Validate even a live wrapper before queuing work; malformed declarations cannot widen.
     readSubagentSessionResources(wrapper.inner.sessionManager.getEntries() as unknown as SessionEntry[]);
     if (!wrapper.isAlive()) throw new Error("Subagent session is no longer available");
     if (wrapper.isRunning()) throw new Error("Subagent is already running");

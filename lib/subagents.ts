@@ -33,6 +33,7 @@ export interface SubagentProfile {
   skills?: string[];
   loadSkills: boolean;
   loadExtensions: boolean;
+  extensionScope?: string[];
   model?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
@@ -63,6 +64,7 @@ export interface SubagentMetadata {
 }
 
 export interface SubagentResourceSnapshot {
+  extensionScope?: string[];
   version: 1;
   skills?: string[];
   appendSystemPrompt: string[];
@@ -74,6 +76,7 @@ export interface SubagentResourceSnapshot {
 
 export interface SubagentSessionResources {
   skills?: string[];
+  extensionScope?: string[];
   appendSystemPrompt: string[];
   tools: string[];
   loadSkills: boolean;
@@ -232,6 +235,28 @@ function profileSkills(value: unknown): string[] | undefined {
   return validateSubagentSkills(value);
 }
 
+export function validateExtensionScope(value: unknown): string[] {
+  if (!Array.isArray(value) || [...value].some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error("Invalid extensionScope: expected nonempty string identities in an array");
+  }
+  return [...new Set(value.map((item: string) => item.trim().toLowerCase()))];
+}
+
+/** Undefined means native discovery; empty means no external entries. */
+function profileExtensionScope(value: unknown): string[] | undefined {
+  if (value === undefined || typeof value === "boolean") return undefined;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["all", "*", "true"].includes(normalized)) return undefined;
+    if (["none", "false", ""].includes(normalized)) return [];
+    return validateExtensionScope(value.split(","));
+  }
+  const names = validateExtensionScope(value);
+  if (names.length === 1 && ["all", "*", "true"].includes(names[0])) return undefined;
+  if (names.length === 1 && ["none", "false"].includes(names[0])) return [];
+  return names;
+}
+
 function stringList(value: unknown): string[] {
   const values = Array.isArray(value)
     ? value
@@ -330,6 +355,7 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
           denied === "*" || allowed === denied || allowed.startsWith(`${denied}/`)
         ));
       });
+    const extensionScope = profileExtensionScope(data?.extensions);
     return {
       name,
       displayName: stringValue(data?.display_name) ?? name,
@@ -340,7 +366,10 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
       ...(disallowedExtensionTools.length > 0 ? { disallowedExtensionTools } : {}),
       ...(skills !== undefined ? { skills } : {}),
       loadSkills: resourceBoolean(data?.load_skills ?? data?.skills, false),
-      loadExtensions: resourceBoolean(data?.load_extensions ?? data?.extensions, extensionTools.length > 0),
+      loadExtensions: resourceBoolean(data?.load_extensions, extensionScope !== undefined
+        ? extensionScope.length > 0
+        : resourceBoolean(data?.extensions, extensionTools.length > 0)),
+      ...(extensionScope !== undefined ? { extensionScope } : {}),
       ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
       ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
       ...(maxTurnsValue && maxTurnsValue > 0 ? { maxTurns: maxTurnsValue } : {}),
@@ -453,6 +482,7 @@ export function saveSubagentProfile(
   profile: Omit<SubagentProfile, "scope" | "filePath">,
 ): SubagentProfile {
   const name = assertProfileName(profile.name);
+  const requestedExtensionScope = profile.extensionScope === undefined ? undefined : validateExtensionScope(profile.extensionScope);
   const tools = [...new Set(profile.tools.filter((tool) => BUILTIN_TOOLS.has(tool)))];
   const extensionTools = [...new Set(profile.extensionTools ?? [])];
   if (profile.thinking && !THINKING_LEVELS.has(profile.thinking)) {
@@ -478,6 +508,8 @@ export function saveSubagentProfile(
   }
   const filePath = join(dir, `${name}.md`);
   const stored = readStoredFrontmatter(filePath);
+  const authoredExtensionScope = profileExtensionScope(stored.extensions);
+  const extensionScope = requestedExtensionScope ?? authoredExtensionScope;
   const managed: Record<string, unknown> = {
     description,
     display_name: displayName,
@@ -498,7 +530,13 @@ export function saveSubagentProfile(
   } else {
     syncFlagAlias(managed, "skills", stored.skills, loadSkills);
   }
-  syncFlagAlias(managed, "extensions", stored.extensions, loadExtensions);
+  if (requestedExtensionScope !== undefined) {
+    managed.extensions = authoredExtensionScope !== undefined && JSON.stringify(authoredExtensionScope) === JSON.stringify(requestedExtensionScope)
+      ? stored.extensions
+      : requestedExtensionScope;
+  } else {
+    syncFlagAlias(managed, "extensions", stored.extensions, loadExtensions);
+  }
   if (model) managed.model = model;
   if (profile.thinking) managed.thinking = profile.thinking;
   if (maxTurns) managed.max_turns = maxTurns;
@@ -523,6 +561,7 @@ export function saveSubagentProfile(
     ...(extensionTools.length > 0 ? { extensionTools } : {}),
     loadSkills,
     loadExtensions,
+    ...(extensionScope !== undefined ? { extensionScope } : {}),
     ...(model ? { model } : { model: undefined }),
     ...(maxTurns ? { maxTurns } : { maxTurns: undefined }),
     promptMode,
@@ -570,9 +609,16 @@ function subagentMetadataData(entries: readonly SessionEntry[]): ValidSubagentMe
 export function readSubagentSessionResources(
   entries: readonly SessionEntry[],
 ): SubagentSessionResources | null {
+  const entry = entries.find((item) => item.type === "custom" && item.customType === SUBAGENT_META_TYPE);
+  const snapshot = entry?.type === "custom" && isRecord(entry.data) ? entry.data.resourceSnapshot : undefined;
+  const extensionScope = isRecord(snapshot) && "extensionScope" in snapshot
+    ? validateExtensionScope(snapshot.extensionScope)
+    : undefined;
   const data = subagentMetadataData(entries);
-  if (!data) return null;
-  const snapshot = data.resourceSnapshot;
+  if (!data) {
+    if (extensionScope !== undefined) throw new Error("Invalid scoped subagent metadata");
+    return null;
+  }
   const skills = isRecord(snapshot) && "skills" in snapshot ? validateSubagentSkills(snapshot.skills) : undefined;
   const loadSkills = isRecord(snapshot) && snapshot.loadSkills === true;
   const loadExtensions = isRecord(snapshot) && snapshot.loadExtensions === true;
@@ -593,11 +639,13 @@ export function readSubagentSessionResources(
       ...(skills !== undefined ? { skills } : {}),
       appendSystemPrompt: [...snapshot.appendSystemPrompt],
       tools: [...new Set(snapshot.tools)],
+      ...(extensionScope !== undefined ? { extensionScope } : {}),
       loadSkills,
       loadExtensions,
       ...(typeof snapshot.exactSystemPrompt === "string" ? { exactSystemPrompt: snapshot.exactSystemPrompt } : {}),
     };
   }
+  if (extensionScope !== undefined) throw new Error("Invalid scoped subagent resourceSnapshot");
   return null;
 }
 
@@ -655,6 +703,7 @@ function extensionSourceKey(extension: SubagentExtensionLike): string {
  * so accepting them would turn `ext:local` into "every local extension".
  */
 function extensionCandidateNames(extension: SubagentExtensionLike): string[] {
+  if (extension.path.startsWith("builtin:")) return [extension.path.toLowerCase()];
   const { parentDir, baseName } = extensionPathParts(extension);
   const names = [parentDir, baseName];
   const info = extension.sourceInfo;
@@ -711,6 +760,21 @@ function resolveExtensionSelector(
   if (best === undefined) return null;
   const toolName = lower === best ? undefined : selector.slice(best.length + 1) || undefined;
   return { name: best, ...(toolName === undefined ? {} : { toolName }) };
+}
+
+/** Resolve load declarations with the same collision owners and longest-name rules as tools. */
+export function selectSubagentExtensionPaths(
+  extensions: readonly SubagentExtensionLike[],
+  scope: readonly string[],
+): string[] {
+  const owners = extensionNameOwners(extensions);
+  const addressable = new Set([...owners].filter(([, claimed]) => claimed.size === 1).map(([name]) => name));
+  const matches = scope.flatMap((selector) => {
+    const match = resolveExtensionSelector(selector, addressable);
+    return match && match.toolName === undefined ? [match.name] : [];
+  });
+  return extensions.filter((extension) => extensionCandidateNames(extension).some((name) => matches.includes(name)))
+    .map((extension) => extension.path);
 }
 
 export function selectSubagentExtensionTools(

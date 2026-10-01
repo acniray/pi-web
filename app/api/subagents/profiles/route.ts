@@ -84,6 +84,7 @@ export async function PATCH(req: Request) {
       loadSkills: source.loadSkills,
       ...(source.skills !== undefined ? { skills: [...source.skills] } : {}),
       loadExtensions: source.loadExtensions,
+      ...(source.extensionScope !== undefined ? { extensionScope: [...source.extensionScope] } : {}),
       promptMode: source.promptMode,
       model: source.model,
       thinking: source.thinking,

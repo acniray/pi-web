@@ -85,6 +85,7 @@ function editableProfile(profile: SubagentProfile): EditableProfile {
     loadSkills: profile.loadSkills,
     ...(profile.skills !== undefined ? { skills: [...profile.skills] } : {}),
     loadExtensions: profile.loadExtensions,
+    ...(profile.extensionScope !== undefined ? { extensionScope: [...profile.extensionScope] } : {}),
     promptMode: profile.promptMode,
     ...(profile.model ? { model: profile.model } : {}),
     ...(profile.thinking ? { thinking: profile.thinking } : {}),
