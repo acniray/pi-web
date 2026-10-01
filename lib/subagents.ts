@@ -530,10 +530,10 @@ export function saveSubagentProfile(
   } else {
     syncFlagAlias(managed, "skills", stored.skills, loadSkills);
   }
-  if (requestedExtensionScope !== undefined) {
-    managed.extensions = authoredExtensionScope !== undefined && JSON.stringify(authoredExtensionScope) === JSON.stringify(requestedExtensionScope)
+  if (extensionScope !== undefined) {
+    managed.extensions = authoredExtensionScope !== undefined && JSON.stringify(authoredExtensionScope) === JSON.stringify(extensionScope)
       ? stored.extensions
-      : requestedExtensionScope;
+      : extensionScope;
   } else {
     syncFlagAlias(managed, "extensions", stored.extensions, loadExtensions);
   }
