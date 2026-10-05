@@ -3,11 +3,15 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 
+export type SubagentBackend = "builtin" | "nicobailon";
+
 export interface SubagentSettings {
   builtInEnabled: boolean;
   /** Built-in profiles switched off, in the spelling the file uses. */
   disabledBuiltIns: string[];
   maxConcurrent: number;
+  /** Runtime that owns subagent execution. Pi Web remains the default. */
+  backend: SubagentBackend;
 }
 
 type StoredSubagentSettings = Record<string, unknown> & {
@@ -15,10 +19,16 @@ type StoredSubagentSettings = Record<string, unknown> & {
   builtInEnabled?: unknown;
   disabledBuiltIns?: unknown;
   maxConcurrent?: unknown;
+  backend?: unknown;
 };
 
 export const DEFAULT_SUBAGENT_MAX_CONCURRENT = 10;
 export const MAX_SUBAGENT_MAX_CONCURRENT = 32;
+export const DEFAULT_SUBAGENT_BACKEND: SubagentBackend = "builtin";
+
+function readBackend(value: unknown): SubagentBackend {
+  return value === "nicobailon" ? "nicobailon" : DEFAULT_SUBAGENT_BACKEND;
+}
 
 function readMaxConcurrent(value: unknown): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_SUBAGENT_MAX_CONCURRENT
@@ -51,11 +61,19 @@ function settingsValue(
   builtInEnabled: boolean,
   maxConcurrent: number,
   disabledBuiltIns: string[],
+  backend: SubagentBackend,
 ): SubagentSettings {
-  return Object.defineProperty({ builtInEnabled, disabledBuiltIns }, "maxConcurrent", {
-    value: maxConcurrent,
-    enumerable: false,
-    configurable: true,
+  return Object.defineProperties({ builtInEnabled, disabledBuiltIns }, {
+    maxConcurrent: {
+      value: maxConcurrent,
+      enumerable: false,
+      configurable: true,
+    },
+    backend: {
+      value: backend,
+      enumerable: false,
+      configurable: true,
+    },
   }) as SubagentSettings;
 }
 
@@ -80,6 +98,7 @@ export function readSubagentSettings(
     stored.builtInEnabled === true,
     readMaxConcurrent(stored.maxConcurrent),
     readDisabledBuiltIns(stored.disabledBuiltIns),
+    readBackend(stored.backend),
   );
 }
 
@@ -100,11 +119,22 @@ export function disabledBuiltInSubagents(
   }
 }
 
+export function getSubagentBackend(
+  settingsPath = getSubagentSettingsPath(),
+): SubagentBackend {
+  try {
+    return readSubagentSettings(settingsPath).backend;
+  } catch {
+    return DEFAULT_SUBAGENT_BACKEND;
+  }
+}
+
 export function isBuiltInSubagentsEnabled(
   settingsPath = getSubagentSettingsPath(),
 ): boolean {
   try {
-    return readSubagentSettings(settingsPath).builtInEnabled;
+    const settings = readSubagentSettings(settingsPath);
+    return settings.backend === "builtin" && settings.builtInEnabled;
   } catch {
     return false;
   }
@@ -163,6 +193,23 @@ export function writeSubagentMaxConcurrent(
     ...stored,
     version: 1,
     maxConcurrent,
+  }, null, 2));
+  return readSubagentSettings(settingsPath);
+}
+
+export function writeSubagentBackend(
+  backend: SubagentBackend,
+  settingsPath = getSubagentSettingsPath(),
+): SubagentSettings {
+  if (backend !== "builtin" && backend !== "nicobailon") {
+    throw new Error("backend must be builtin or nicobailon");
+  }
+  const stored = readStoredSettings(settingsPath);
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writePrivateFileAtomicSync(settingsPath, JSON.stringify({
+    ...stored,
+    version: 1,
+    backend,
   }, null, 2));
   return readSubagentSettings(settingsPath);
 }

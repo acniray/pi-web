@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import type { ProjectTrustStatus, SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
+import type { ProjectTrustStatus, SubagentBackend, SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { displayPathWithin, shortenPath } from "@/lib/display-path";
 import type { ModelsData } from "@/lib/models-cache";
@@ -175,6 +175,7 @@ export function AgentsConfig({
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [builtInEnabled, setBuiltInEnabled] = useState(false);
+  const [backend, setBackend] = useState<SubagentBackend>("builtin");
   const [maxConcurrent, setMaxConcurrent] = useState(10);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -239,6 +240,7 @@ export function AgentsConfig({
           throw new Error(data.error ?? `HTTP ${response.status}`);
         }
         setBuiltInEnabled(data.enabled);
+        if (data.backend === "builtin" || data.backend === "nicobailon") setBackend(data.backend);
         if (typeof data.maxConcurrent === "number") setMaxConcurrent(data.maxConcurrent);
       } catch (cause) {
         if (controller.signal.aborted) return;
@@ -433,6 +435,28 @@ export function AgentsConfig({
     }
   };
 
+  const updateBackend = async (nextBackend: SubagentBackend) => {
+    setSettingsSaving(true);
+    setSettingsError(null);
+    try {
+      const response = await fetch("/api/subagents/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backend: nextBackend }),
+      });
+      const data = await response.json() as Partial<SubagentSettingsResponse> & { error?: string };
+      if (!response.ok || data.error || (data.backend !== "builtin" && data.backend !== "nicobailon")) {
+        throw new Error(data.error ?? `HTTP ${response.status}`);
+      }
+      setBackend(data.backend);
+      setReloadNeeded(Boolean(sessionId));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
   const updateMaxConcurrent = async (value: number) => {
     setMaxConcurrent(value);
     setSettingsError(null);
@@ -469,8 +493,8 @@ export function AgentsConfig({
     <ConfigPanelShell embedded={embedded} title={t("common.agents")} subtitle={shortenPath(cwd)} closeLabel={t("agents.close")} onClose={onClose}>
       <div className="agents-feature-setting">
         <div className="agents-feature-copy">
-          <strong>{t("agents.builtInTitle")}</strong>
-          <span>{t("agents.builtInDescription")}</span>
+          <strong>{t("agents.backendTitle")}</strong>
+          <span>{backend === "nicobailon" ? t("agents.backendNicobailonDescription") : t("agents.builtInDescription")}</span>
           {reloadNeeded && <span role="status" className="agents-feature-reload-notice">{t("agents.reloadRequired")}</span>}
         </div>
         <div className="agents-feature-actions">
@@ -479,26 +503,43 @@ export function AgentsConfig({
               {reloading ? t("agents.reloading") : t("agents.reloadSession")}
             </ConfigButton>
           )}
-          <label className="agents-concurrency-control" title={t("agents.maxConcurrentDescription")}>
-            <span>{t("agents.maxConcurrent")}</span>
-            <input
-              aria-label={t("agents.maxConcurrent")}
-              type="number"
-              min={1}
-              max={32}
-              value={maxConcurrent}
-              disabled={settingsLoading || settingsSaving}
-              onChange={(event) => setMaxConcurrent(Number(event.target.value))}
-              onBlur={() => void updateMaxConcurrent(maxConcurrent)}
-            />
+          <label className="agents-concurrency-control" title={t("agents.backendDescription")}>
+            <span>{t("agents.backend")}</span>
+            <select
+              aria-label={t("agents.backend")}
+              value={backend}
+              disabled={settingsLoading || settingsSaving || reloading}
+              onChange={(event) => void updateBackend(event.target.value as SubagentBackend)}
+              style={{ ...inputStyle, width: "auto", minWidth: 160 }}
+            >
+              <option value="builtin">{t("agents.backend.builtin")}</option>
+              <option value="nicobailon">{t("agents.backend.nicobailon")}</option>
+            </select>
           </label>
-          <ConfigSwitch
-            checked={builtInEnabled}
-            disabled={settingsLoading || reloading}
-            loading={settingsSaving}
-            label={t("agents.builtInTitle")}
-            onChange={(enabled) => void toggleBuiltInSubagents(enabled)}
-          />
+          {backend === "builtin" && (
+            <>
+              <label className="agents-concurrency-control" title={t("agents.maxConcurrentDescription")}>
+                <span>{t("agents.maxConcurrent")}</span>
+                <input
+                  aria-label={t("agents.maxConcurrent")}
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={maxConcurrent}
+                  disabled={settingsLoading || settingsSaving}
+                  onChange={(event) => setMaxConcurrent(Number(event.target.value))}
+                  onBlur={() => void updateMaxConcurrent(maxConcurrent)}
+                />
+              </label>
+              <ConfigSwitch
+                checked={builtInEnabled}
+                disabled={settingsLoading || settingsSaving || reloading}
+                loading={settingsSaving}
+                label={t("agents.builtInTitle")}
+                onChange={(enabled) => void toggleBuiltInSubagents(enabled)}
+              />
+            </>
+          )}
         </div>
       </div>
       <ConfigSplitView>

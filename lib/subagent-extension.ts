@@ -12,6 +12,7 @@ import {
   type SubagentRunInfo,
 } from "./subagents";
 import { MAX_SUBAGENT_INPUT_FILES } from "./subagent-input";
+import type { SubagentBackend } from "./subagent-settings";
 
 export const HOST_SUBAGENT_EXTENSION_NAME = "pi-web-subagents";
 const HOST_SUBAGENT_EXTENSION_PATH = `<inline:${HOST_SUBAGENT_EXTENSION_NAME}>`;
@@ -316,11 +317,23 @@ export function createSubagentExtension(
   };
 }
 
-/** Keep Pi Web's integrated implementation when the legacy package is loaded. */
-export function preferPiWebSubagentExtension(base: LoadExtensionsResult): LoadExtensionsResult {
+/**
+ * Keep exactly one subagent orchestrator active.
+ *
+ * - builtin: Pi Web owns Agent/get_subagent_result/steer_subagent and removes
+ *   the legacy pi-subagents implementation that exposes the same tools.
+ * - nicobailon: the Pi Web factory stays loaded but registers no tools; remove
+ *   only the legacy reserved-tool implementation and leave an installed
+ *   nicobailon/pi-subagents extension (which exposes `subagent`) untouched.
+ */
+export function preferPiWebSubagentExtension(
+  base: LoadExtensionsResult,
+  backend: SubagentBackend = "builtin",
+): LoadExtensionsResult {
   const host = base.extensions.find((extension) => extension.path === HOST_SUBAGENT_EXTENSION_PATH);
-  if (!host?.tools.has("Agent")) return base;
-  const legacyPaths = new Set(base.extensions
+  if (backend === "builtin" && !host?.tools.has("Agent")) return base;
+
+  const piSubagentExtensions = base.extensions
     .filter((extension) => extension.path !== HOST_SUBAGENT_EXTENSION_PATH)
     .filter((extension) => {
       const source = extension.sourceInfo?.source ?? "";
@@ -328,19 +341,25 @@ export function preferPiWebSubagentExtension(base: LoadExtensionsResult): LoadEx
       const pathSegments = extension.path.replaceAll("\\", "/").split("/");
       return sourcePackage === LEGACY_SUBAGENT_PACKAGE_NAME
         || pathSegments.some((segment) => segment === LEGACY_SUBAGENT_PACKAGE_NAME);
+    });
+  const removedPaths = new Set(piSubagentExtensions
+    .filter((extension) => {
+      const ownsReservedTool = [...SUBAGENT_TOOL_NAMES].some((name) => extension.tools.has(name));
+      return backend === "nicobailon"
+        ? ownsReservedTool
+        : ownsReservedTool || extension.tools.has("subagent");
     })
-    .filter((extension) => [...SUBAGENT_TOOL_NAMES].some((name) => extension.tools.has(name)))
     .map((extension) => extension.path));
-  if (legacyPaths.size === 0) return base;
+  if (removedPaths.size === 0) return base;
   return {
     ...base,
-    extensions: base.extensions.filter((extension) => !legacyPaths.has(extension.path)),
+    extensions: base.extensions.filter((extension) => !removedPaths.has(extension.path)),
     errors: base.errors.filter((error) => {
-      if (legacyPaths.has(error.path)) return false;
+      if (removedPaths.has(error.path)) return false;
       if (error.path !== HOST_SUBAGENT_EXTENSION_PATH) return true;
-      return ![...legacyPaths].some((legacyPath) =>
+      return ![...removedPaths].some((removedPath) =>
         [...SUBAGENT_TOOL_NAMES].some((name) =>
-          error.error === `Tool "${name}" conflicts with ${legacyPath}`
+          error.error === `Tool "${name}" conflicts with ${removedPath}`
         )
       );
     }),

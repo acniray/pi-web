@@ -122,6 +122,7 @@ export function AppShell() {
   }, [playDoneSound, soundEnabledRef]);
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
+  const [nestedSubagentSessions, setNestedSubagentSessions] = useState<SessionInfo[]>([]);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
     setSessionCatalog(sessions);
     // The sidebar hydrates metadata after the selected session has already
@@ -133,13 +134,15 @@ export function AppShell() {
       return refreshed ? mergeCatalogRow(current, refreshed) : current;
     });
   }, []);
+  const subagentRootSessionId = selectedSession?.relation?.kind === "subagent"
+    ? selectedSession.relation.parentSessionId
+    : selectedSession?.id ?? null;
   const sessionsWithSelection = useMemo(() => {
-    if (!selectedSession) return sessionCatalog;
-    return [
-      ...sessionCatalog.filter((session) => session.id !== selectedSession.id),
-      selectedSession,
-    ];
-  }, [selectedSession, sessionCatalog]);
+    const byId = new Map(sessionCatalog.map((session) => [session.id, session]));
+    for (const session of nestedSubagentSessions) byId.set(session.id, session);
+    if (selectedSession) byId.set(selectedSession.id, selectedSession);
+    return [...byId.values()];
+  }, [nestedSubagentSessions, selectedSession, sessionCatalog]);
   const activeSessionFamily = useMemo(
     () => getSessionFamily(sessionsWithSelection, selectedSession?.id),
     [selectedSession?.id, sessionsWithSelection],
@@ -330,6 +333,48 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | null>(null);
+
+  // nicobailon/pi-subagents deliberately nests child JSONL files under the
+  // parent session so normal resume/session scans stay small. Discover only
+  // the active parent's children and merge them into the Agents panel, never
+  // into the sidebar catalogue.
+  useEffect(() => {
+    if (!subagentRootSessionId) {
+      setNestedSubagentSessions([]);
+      return;
+    }
+    const controller = new AbortController();
+    let loadingChildren = false;
+    const refreshChildren = async () => {
+      if (loadingChildren || controller.signal.aborted) return;
+      loadingChildren = true;
+      try {
+        const response = await fetch(
+          `/api/sessions/${encodeURIComponent(subagentRootSessionId)}/subagents`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (response.status === 404) {
+          setNestedSubagentSessions([]);
+          return;
+        }
+        const data = await response.json() as { sessions?: SessionInfo[] };
+        if (response.ok && Array.isArray(data.sessions)) setNestedSubagentSessions(data.sessions);
+      } catch {
+        // Child discovery is additive; a failed refresh must not interrupt chat.
+      } finally {
+        loadingChildren = false;
+      }
+    };
+    void refreshChildren();
+    const interval = window.setInterval(
+      () => void refreshChildren(),
+      activeTopPanel === "agents" ? 2500 : 10000,
+    );
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [activeTopPanel, subagentRootSessionId]);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {

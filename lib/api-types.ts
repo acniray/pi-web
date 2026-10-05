@@ -6,9 +6,12 @@ export interface SubagentProfilesResponse {
   profiles: SubagentProfile[];
 }
 
+export type SubagentBackend = "builtin" | "nicobailon";
+
 export interface SubagentSettingsResponse {
   enabled: boolean;
   maxConcurrent: number;
+  backend: SubagentBackend;
 }
 
 /** Code mode's one choice (ADR 0006): Automatic writes nothing, Always on adds `+codemode` to the global defaultTools. */

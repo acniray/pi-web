@@ -4,6 +4,7 @@ import {
   readSubagentSettings,
   MAX_SUBAGENT_MAX_CONCURRENT,
   writeBuiltInSubagentsEnabled,
+  writeSubagentBackend,
   writeSubagentMaxConcurrent,
 } from "@/lib/subagent-settings";
 
@@ -12,7 +13,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const settings = readSubagentSettings();
-    return NextResponse.json({ enabled: settings.builtInEnabled, maxConcurrent: settings.maxConcurrent });
+    return NextResponse.json({ enabled: settings.builtInEnabled, maxConcurrent: settings.maxConcurrent, backend: settings.backend });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
@@ -30,9 +31,9 @@ export async function PUT(req: Request) {
   }
 
   try {
-    const body = await req.json() as { enabled?: unknown; maxConcurrent?: unknown };
-    if (body.enabled === undefined && body.maxConcurrent === undefined) {
-      return NextResponse.json({ error: "enabled or maxConcurrent is required" }, { status: 400 });
+    const body = await req.json() as { enabled?: unknown; maxConcurrent?: unknown; backend?: unknown };
+    if (body.enabled === undefined && body.maxConcurrent === undefined && body.backend === undefined) {
+      return NextResponse.json({ error: "enabled, maxConcurrent or backend is required" }, { status: 400 });
     }
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
       return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
@@ -45,10 +46,14 @@ export async function PUT(req: Request) {
     )) {
       return NextResponse.json({ error: `maxConcurrent must be an integer between 1 and ${MAX_SUBAGENT_MAX_CONCURRENT}` }, { status: 400 });
     }
+    if (body.backend !== undefined && body.backend !== "builtin" && body.backend !== "nicobailon") {
+      return NextResponse.json({ error: "backend must be builtin or nicobailon" }, { status: 400 });
+    }
     let settings = readSubagentSettings();
     if (body.enabled !== undefined) settings = writeBuiltInSubagentsEnabled(body.enabled);
     if (body.maxConcurrent !== undefined) settings = writeSubagentMaxConcurrent(body.maxConcurrent);
-    return NextResponse.json({ enabled: settings.builtInEnabled, maxConcurrent: settings.maxConcurrent });
+    if (body.backend !== undefined) settings = writeSubagentBackend(body.backend);
+    return NextResponse.json({ enabled: settings.builtInEnabled, maxConcurrent: settings.maxConcurrent, backend: settings.backend });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
