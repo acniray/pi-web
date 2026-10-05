@@ -17,6 +17,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const { GET, PUT, PATCH, DELETE } = await jiti.import("./route.ts");
 const { allowFileRoot } = await jiti.import("../../../../lib/file-access.ts");
+const { writeSubagentBackend } = await jiti.import("../../../../lib/subagent-settings.ts");
 
 after(async () => {
   if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -175,6 +176,46 @@ test("profiles route toggles a built-in through settings.json without writing a 
   response = await PATCH(jsonRequest("PATCH", { cwd, scope: "builtin", name: "not-a-built-in", enabled: false }));
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { error: "Agent profile not found" });
+});
+
+test("profiles route lists nicobailon bundled agents when that backend is selected", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-web-subagent-route-nico-"));
+  const packageRoot = await mkdtemp(join(tmpdir(), "pi-web-subagent-route-nico-package-"));
+  const priorRoot = process.env.PI_WEB_NICOBAILON_SUBAGENTS_ROOT;
+  allowFileRoot(cwd);
+  t.after(async () => {
+    writeSubagentBackend("builtin");
+    if (priorRoot === undefined) delete process.env.PI_WEB_NICOBAILON_SUBAGENTS_ROOT;
+    else process.env.PI_WEB_NICOBAILON_SUBAGENTS_ROOT = priorRoot;
+    await rm(cwd, { recursive: true, force: true });
+    await rm(packageRoot, { recursive: true, force: true });
+  });
+
+  process.env.PI_WEB_NICOBAILON_SUBAGENTS_ROOT = packageRoot;
+  await import("node:fs/promises").then(async ({ mkdir, writeFile }) => {
+    await mkdir(join(packageRoot, "agents"), { recursive: true });
+    await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "pi-subagents" }));
+    await writeFile(
+      join(packageRoot, "agents", "worker.md"),
+      "---\nname: worker\ndescription: Nico worker\nsystemPromptMode: replace\n---\nWork.\n",
+    );
+  });
+  writeSubagentBackend("nicobailon");
+
+  const response = await GET(new Request(`http://localhost/api/subagents/profiles?cwd=${encodeURIComponent(cwd)}`));
+  assert.equal(response.status, 200);
+  const profiles = (await response.json()).profiles;
+  assert.equal(profiles.some((item) => item.scope === "builtin" && item.name === "worker"), true);
+  assert.equal(profiles.some((item) => item.scope === "builtin" && item.name === "explore"), false);
+
+  const toggle = await PATCH(jsonRequest("PATCH", {
+    cwd,
+    scope: "builtin",
+    name: "worker",
+    enabled: false,
+  }));
+  assert.equal(toggle.status, 400);
+  assert.match((await toggle.json()).error, /managed by pi-subagents/);
 });
 
 test("profiles route rejects missing paths, malformed profiles, and unsafe names", async (t) => {

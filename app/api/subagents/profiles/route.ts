@@ -3,12 +3,13 @@ import { existsSync } from "fs";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import {
   deleteSubagentProfile,
+  listNicobailonProfileSources,
   listSubagentProfileSources,
   saveSubagentProfile,
   type SubagentProfile,
   type SubagentWritableScope,
 } from "@/lib/subagents";
-import { writeDisabledBuiltInSubagent } from "@/lib/subagent-settings";
+import { getSubagentBackend, writeDisabledBuiltInSubagent } from "@/lib/subagent-settings";
 
 export const dynamic = "force-dynamic";
 
@@ -30,10 +31,16 @@ function validateToggleScope(scope: unknown): SubagentWritableScope | "builtin" 
   return scope;
 }
 
+function listProfilesForBackend(cwd: string) {
+  return getSubagentBackend() === "nicobailon"
+    ? listNicobailonProfileSources(cwd)
+    : listSubagentProfileSources(cwd);
+}
+
 export async function GET(req: Request) {
   try {
     const cwd = await validateCwd(new URL(req.url).searchParams.get("cwd"));
-    return NextResponse.json({ profiles: listSubagentProfileSources(cwd) });
+    return NextResponse.json({ profiles: listProfilesForBackend(cwd) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: message }, { status: message === "Access denied" ? 403 : 400 });
@@ -67,11 +74,18 @@ export async function PATCH(req: Request) {
     if (typeof body.name !== "string") return NextResponse.json({ error: "name required" }, { status: 400 });
     if (typeof body.enabled !== "boolean") return NextResponse.json({ error: "enabled required" }, { status: 400 });
     const name = body.name;
-    const source = listSubagentProfileSources(cwd).find((profile) =>
+    const backend = getSubagentBackend();
+    const source = listProfilesForBackend(cwd).find((profile) =>
       profile.scope === scope && profile.name.toLowerCase() === name.toLowerCase()
     );
     if (!source) return NextResponse.json({ error: "Agent profile not found" }, { status: 404 });
     if (scope === "builtin") {
+      if (backend === "nicobailon") {
+        return NextResponse.json(
+          { error: "nicobailon built-in agents are managed by pi-subagents" },
+          { status: 400 },
+        );
+      }
       writeDisabledBuiltInSubagent(source.name, !body.enabled);
       return NextResponse.json({ profile: { ...source, enabled: body.enabled } });
     }

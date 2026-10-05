@@ -382,7 +382,11 @@ export function AgentsConfig({
   const controlStyle = disabled ? { ...inputStyle, ...disabledInputStyle } : inputStyle;
   const switchDisabled = creating
     ? disabled
-    : !selected || !isTogglableScope(selected.scope) || saving || toggling;
+    : !selected
+      || !isTogglableScope(selected.scope)
+      || (backend === "nicobailon" && selected.scope === "builtin")
+      || saving
+      || toggling;
   const update = <K extends keyof EditableProfile>(key: K, value: EditableProfile[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
@@ -449,6 +453,7 @@ export function AgentsConfig({
         throw new Error(data.error ?? `HTTP ${response.status}`);
       }
       setBackend(data.backend);
+      await loadProfiles();
       setReloadNeeded(Boolean(sessionId));
     } catch (cause) {
       setSettingsError(cause instanceof Error ? cause.message : String(cause));

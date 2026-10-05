@@ -355,6 +355,119 @@ function profileDirectories(cwd: string): Array<[string, Exclude<SubagentScope, 
   ];
 }
 
+const NICOBAILON_PACKAGE_ROOT_ENV = "PI_WEB_NICOBAILON_SUBAGENTS_ROOT";
+
+export function resolveNicobailonPackageRoot(agentDir = getAgentDir()): string | undefined {
+  const configured = process.env[NICOBAILON_PACKAGE_ROOT_ENV]?.trim();
+  const candidates = [
+    ...(configured ? [configured] : []),
+    join(agentDir, "npm", "node_modules", "pi-subagents"),
+    join(agentDir, "git", "github.com", "nicobailon", "pi-subagents"),
+  ];
+  for (const candidate of candidates) {
+    const packageJsonPath = join(candidate, "package.json");
+    const agentsDir = join(candidate, "agents");
+    if (!existsSync(packageJsonPath) || !existsSync(agentsDir)) continue;
+    try {
+      const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
+      if (pkg.name === "pi-subagents") return candidate;
+    } catch {
+      // Ignore stale or partial installs and try the next candidate.
+    }
+  }
+  return undefined;
+}
+
+function nicobailonProfileFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const files: string[] = [];
+  const visit = (current: string) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile() && entry.name.endsWith(".md") && !entry.name.endsWith(".chain.md")) files.push(path);
+    }
+  };
+  visit(dir);
+  return files.sort((a, b) => a.localeCompare(b));
+}
+
+function parseNicobailonBuiltinProfile(filePath: string): SubagentProfile | null {
+  try {
+    const source = readFileSync(filePath, "utf8");
+    const { data, rest } = parseFrontmatter(source);
+    const name = stringValue(data?.name) ?? basename(filePath, ".md");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
+
+    const runnerConfigured = Boolean(data?.runner && typeof data.runner === "object");
+    const tools = parseTools(data?.tools, runnerConfigured ? [] : DEFAULT_TOOLS);
+    const thinkingValue = stringValue(data?.thinking) as ThinkingLevel | undefined;
+    const maxTurnsRaw = data?.maxTurns ?? data?.max_turns;
+    const maxTurns = typeof maxTurnsRaw === "number" && maxTurnsRaw > 0
+      ? Math.floor(maxTurnsRaw)
+      : undefined;
+    const loadSkills = resourceBoolean(data?.skills ?? data?.load_skills, false);
+    const loadExtensions = resourceBoolean(
+      data?.extensions ?? data?.subagentOnlyExtensions ?? data?.load_extensions,
+      false,
+    );
+    const promptMode = data?.systemPromptMode === "replace" || data?.prompt_mode === "replace"
+      ? "replace"
+      : "append";
+    const inheritContext = booleanValue(
+      data?.inheritProjectContext ?? data?.inherit_context,
+      false,
+    );
+    const runInBackground = booleanValue(
+      data?.async ?? data?.defaultAsync ?? data?.run_in_background,
+      false,
+    );
+    const enabled = data?.disabled === true ? false : booleanValue(data?.enabled, true);
+
+    return {
+      name,
+      displayName: stringValue(data?.display_name) ?? name,
+      description: stringValue(data?.description) ?? name,
+      systemPrompt: rest.trim(),
+      tools,
+      loadSkills,
+      loadExtensions,
+      promptMode,
+      ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
+      ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
+      ...(maxTurns ? { maxTurns } : {}),
+      inheritContext,
+      runInBackground,
+      enabled,
+      scope: "builtin",
+      filePath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function nicobailonBuiltInProfiles(): SubagentProfile[] {
+  const packageRoot = resolveNicobailonPackageRoot();
+  if (!packageRoot) return [];
+  return nicobailonProfileFiles(join(packageRoot, "agents"))
+    .map((filePath) => parseNicobailonBuiltinProfile(filePath))
+    .filter((profile): profile is SubagentProfile => profile !== null);
+}
+
+/**
+ * Catalogue used by the Agents settings UI when nicobailon owns execution.
+ * Its bundled agents replace Pi Web's Explore/General purpose/Plan catalogue,
+ * while user/workspace/project definitions keep the same files the runtime reads.
+ */
+export function listNicobailonProfileSources(cwd: string): SubagentProfile[] {
+  const profiles = nicobailonBuiltInProfiles();
+  for (const [dir, scope] of profileDirectories(cwd)) {
+    profiles.push(...readProfileDirectory(dir, scope, cwd));
+  }
+  return profiles.sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
 /**
  * A built-in has no file, so `enabled: false` cannot be written next to it the way
  * it is for a profile on disk. Its off state is a name in `agents/settings.json`
