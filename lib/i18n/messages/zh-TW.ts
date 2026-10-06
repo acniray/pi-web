@@ -163,7 +163,7 @@ export const zhTWLocale: LocalePlugin = {
     "agentSwitcher.workflowStatus.queued": "排隊中",
     "agentSwitcher.workflowStatus.running": "執行中",
     "agentSwitcher.workflowStatus.complete": "已完成",
-    "agentSwitcher.workflowStatus.failed": "失败",
+    "agentSwitcher.workflowStatus.failed": "失敗",
     "agentSwitcher.workflowStatus.partial": "部分完成",
     "agentSwitcher.workflowStatus.paused": "已暫停",
     "agentSwitcher.workflowStatus.stopped": "已停止",

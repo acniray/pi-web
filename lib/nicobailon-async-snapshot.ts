@@ -1,6 +1,6 @@
-export const NICOBailon_ASYNC_WIDGET_KEY = "subagent-async";
-export const NICOBailon_FLEET_WIDGET_KEY = "subagent-fleet-status";
-export const NICOBailon_ASYNC_WIDGET_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
+export const NICOBAILON_ASYNC_WIDGET_KEY = "subagent-async";
+export const NICOBAILON_FLEET_WIDGET_KEY = "subagent-fleet-status";
+export const NICOBAILON_ASYNC_WIDGET_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
 
 export type NicobailonAsyncState =
   | "queued"
@@ -121,10 +121,10 @@ export function parseNicobailonAsyncSnapshot(
   lines: readonly string[],
 ): NicobailonAsyncSnapshot | null {
   for (const line of lines) {
-    const prefixIndex = line.indexOf(NICOBailon_ASYNC_WIDGET_PREFIX);
+    const prefixIndex = line.indexOf(NICOBAILON_ASYNC_WIDGET_PREFIX);
     if (prefixIndex < 0) continue;
     try {
-      const value = JSON.parse(line.slice(prefixIndex + NICOBailon_ASYNC_WIDGET_PREFIX.length)) as unknown;
+      const value = JSON.parse(line.slice(prefixIndex + NICOBAILON_ASYNC_WIDGET_PREFIX.length)) as unknown;
       if (!isRecord(value)) continue;
       if (value.kind !== "pi-subagents.async-status-snapshot" || value.version !== 1) continue;
       const generatedAt = finiteNonNegative(value.generatedAt);
@@ -158,10 +158,10 @@ export function parseNicobailonAsyncSnapshot(
 export function findNicobailonAsyncSnapshot(
   widgets: readonly { key: string; lines: readonly string[] }[],
 ): NicobailonAsyncSnapshot | null {
-  const widget = widgets.find((candidate) => candidate.key === NICOBailon_ASYNC_WIDGET_KEY);
+  const widget = widgets.find((candidate) => candidate.key === NICOBAILON_ASYNC_WIDGET_KEY);
   return widget ? parseNicobailonAsyncSnapshot(widget.lines) : null;
 }
 
 export function isNicobailonHostStatusWidget(key: string): boolean {
-  return key === NICOBailon_ASYNC_WIDGET_KEY || key === NICOBailon_FLEET_WIDGET_KEY;
+  return key === NICOBAILON_ASYNC_WIDGET_KEY || key === NICOBAILON_FLEET_WIDGET_KEY;
 }
