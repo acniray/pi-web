@@ -158,6 +158,8 @@ export const zhTWLocale: LocalePlugin = {
     "agentSwitcher.run": "執行",
     "agentSwitcher.workflows": "工作流程",
     "agentSwitcher.sessions": "子 Agent 工作階段",
+    "agentSwitcher.liveAgents": "執行中的子 Agent",
+    "agentSwitcher.liveRuntime": "即時執行",
     "agentSwitcher.stepCount": "{count} 個步驟",
     "agentSwitcher.updated": "更新於 {time}",
     "agentSwitcher.workflowStatus.queued": "排隊中",
