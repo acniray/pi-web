@@ -41,3 +41,12 @@ test("renders nicobailon workflow snapshots inside the existing Agents panel", (
   assert.match(source, /node\.activity\?\.currentTool/);
   assert.match(source, /agentSwitcher\.workflowStatus\.\$\{node\.state\}/);
 });
+
+
+test("shows live subagents from the async snapshot before a session file exists", () => {
+  assert.match(source, /function collectLiveSubagentNodes/);
+  assert.match(source, /node\.kind === "step" \|\| \(node\.kind === "subagent" && !hasStepChildren\)/);
+  assert.match(source, /<LiveAgentRow/);
+  assert.match(source, /agentSwitcher\.liveRuntime/);
+  assert.match(source, /visibleSubagents\.length === 0 && visibleLiveSubagentNodes\.length === 0/);
+});
