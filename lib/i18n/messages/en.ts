@@ -158,6 +158,8 @@ export const enLocale: LocalePlugin = {
     "agentSwitcher.run": "Run",
     "agentSwitcher.workflows": "Workflows",
     "agentSwitcher.sessions": "Sub-agent sessions",
+    "agentSwitcher.liveAgents": "Live sub-agents",
+    "agentSwitcher.liveRuntime": "Live runtime",
     "agentSwitcher.stepCount": "{count} steps",
     "agentSwitcher.updated": "updated {time}",
     "agentSwitcher.workflowStatus.queued": "Queued",
