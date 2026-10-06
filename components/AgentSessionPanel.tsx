@@ -199,6 +199,75 @@ function countRunningWorkflowLeaves(nodes: readonly NicobailonAsyncNode[]): numb
   }, 0);
 }
 
+function collectLiveSubagentNodes(nodes: readonly NicobailonAsyncNode[]): NicobailonAsyncNode[] {
+  const live: NicobailonAsyncNode[] = [];
+  const seen = new Set<string>();
+  const visit = (node: NicobailonAsyncNode) => {
+    if (node.kind === "host-step") return;
+    const active = node.state === "running" || node.state === "queued";
+    const hasStepChildren = node.children?.some((child) => child.kind === "step") ?? false;
+
+    // A run node with projected step children is an aggregate. Prefer the
+    // concrete step rows so a single/parallel run is not shown twice.
+    if (active && (node.kind === "step" || (node.kind === "subagent" && !hasStepChildren))) {
+      const key = `${node.kind}:${node.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        live.push(node);
+      }
+    }
+    node.children?.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return live;
+}
+
+function LiveAgentRow({ node }: { node: NicobailonAsyncNode }) {
+  const { t } = useI18n();
+  const status = workflowStatusToSessionStatus(node.state);
+  const duration = formatDurationMs(node.startedAt);
+  const activity = node.activity?.currentTool;
+  return (
+    <div
+      role="status"
+      style={{
+        width: "100%",
+        minHeight: 56,
+        display: "grid",
+        gridTemplateColumns: "28px minmax(0, 1fr) auto",
+        alignItems: "center",
+        gap: 9,
+        padding: "7px 12px",
+        borderBottom: "1px solid var(--border)",
+        borderLeft: "2px solid transparent",
+        background: node.state === "running"
+          ? "color-mix(in srgb, var(--accent) 4%, transparent)"
+          : "transparent",
+        color: "var(--text)",
+        textAlign: "left",
+      }}
+    >
+      <span style={{ width: 28, height: 28, display: "grid", placeItems: "center", color: "var(--accent)" }}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
+        </svg>
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: 500 }} title={node.label}>
+          {node.label}
+        </span>
+        <span style={{ display: "block", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 11 }}>
+          {[t("agentSwitcher.liveRuntime"), activity, duration].filter(Boolean).join(" · ")}
+        </span>
+      </span>
+      <span style={{ display: "flex", alignItems: "center", gap: 6, color: statusColor(status), fontSize: 11, whiteSpace: "nowrap" }}>
+        <StatusIcon status={status} />
+        <span>{t(`agentSwitcher.status.${status}`)}</span>
+      </span>
+    </div>
+  );
+}
+
 function AgentRow({
   session,
   main,
@@ -301,6 +370,10 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
     : sortedSubagents;
   const runningCount = subagents.filter((session) => runningSessionIds.has(session.id)).length;
   const workflowRuns = workflowSnapshot?.runs ?? [];
+  const liveSubagentNodes = collectLiveSubagentNodes(workflowRuns);
+  const visibleLiveSubagentNodes = normalizedQuery
+    ? liveSubagentNodes.filter((node) => node.label.toLowerCase().includes(normalizedQuery))
+    : liveSubagentNodes;
   const workflowRunningCount = countRunningWorkflowLeaves(workflowRuns);
   const displayedRunningCount = Math.max(runningCount, workflowRunningCount);
 
@@ -321,16 +394,18 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
       <div>
         <div style={{ minHeight: 44, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderBottom: "1px solid var(--border)" }}>
           <strong style={{ fontSize: 12, fontWeight: 600 }}>{t("agentSwitcher.title")}</strong>
-          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
-            {t("agentSwitcher.count", { count: subagents.length })}
-          </span>
+          {subagents.length > 0 && (
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
+              {t("agentSwitcher.count", { count: subagents.length })}
+            </span>
+          )}
           {displayedRunningCount > 0 && (
             <span style={{ marginLeft: "auto", color: "var(--accent)", fontSize: 11 }}>
               {t("agentSwitcher.runningCount", { count: displayedRunningCount })}
             </span>
           )}
         </div>
-        {subagents.length > 8 && (
+        {subagents.length + liveSubagentNodes.length > 8 && (
           <div style={{ padding: 8, borderBottom: "1px solid var(--border)" }}>
             <input
               type="search"
@@ -354,6 +429,17 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
             running={runningSessionIds.has(rootSession.id)}
             onSelect={() => onSelectSession(rootSession)}
           />
+          {visibleLiveSubagentNodes.length > 0 && (
+            <div aria-label={t("agentSwitcher.liveAgents")}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "5px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 10.5, fontWeight: 600 }}>
+                <span>{t("agentSwitcher.liveAgents")}</span>
+                <span style={{ color: "var(--text-dim)", fontWeight: 500 }}>{visibleLiveSubagentNodes.length}</span>
+              </div>
+              {visibleLiveSubagentNodes.map((node) => (
+                <LiveAgentRow key={`${node.kind}:${node.id}`} node={node} />
+              ))}
+            </div>
+          )}
           {workflowRuns.length > 0 && (
             <div aria-label={t("agentSwitcher.workflows")}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "5px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 10.5, fontWeight: 600 }}>
@@ -365,7 +451,7 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
               ))}
             </div>
           )}
-          {workflowRuns.length > 0 && visibleSubagents.length > 0 && (
+          {(workflowRuns.length > 0 || liveSubagentNodes.length > 0) && visibleSubagents.length > 0 && (
             <div style={{ minHeight: 28, display: "flex", alignItems: "center", padding: "5px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 10.5, fontWeight: 600 }}>
               {t("agentSwitcher.sessions")}
             </div>
@@ -379,7 +465,7 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
               onSelect={() => onSelectSession(session)}
             />
           ))}
-          {visibleSubagents.length === 0 && (
+          {visibleSubagents.length === 0 && visibleLiveSubagentNodes.length === 0 && (
             <div style={{ padding: "22px 12px", color: "var(--text-dim)", fontSize: 12, textAlign: "center" }}>
               {t("agentSwitcher.noMatches")}
             </div>
