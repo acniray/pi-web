@@ -19,13 +19,16 @@ test("uses the shared enabled status treatment", () => {
   assert.match(cssSource, /\.config-sidebar-text\.is-muted \{[\s\S]*?color: var\(--text-dim\)/);
 });
 
-test("offers a persisted built-in sub-agent switch with explicit session reload", () => {
+test("offers a persisted sub-agent backend selector with explicit session reload", () => {
   assert.match(source, /fetch\("\/api\/subagents\/settings"/);
-  assert.match(source, /JSON\.stringify\(\{ enabled \}\)/);
-  assert.match(source, /<ConfigSwitch[\s\S]*?checked=\{builtInEnabled\}[\s\S]*?t\("agents\.builtInTitle"\)/);
+  assert.match(source, /JSON\.stringify\(\{ backend: nextBackend \}\)/);
+  assert.match(source, /<option value="none">\{t\("agents\.backend\.none"\)\}<\/option>/);
+  assert.match(source, /<option value="builtin">\{t\("agents\.backend\.builtin"\)\}<\/option>/);
+  assert.match(source, /<option value="nicobailon">\{t\("agents\.backend\.nicobailon"\)\}<\/option>/);
+  assert.doesNotMatch(source, /toggleBuiltInSubagents|checked=\{builtInEnabled\}|JSON\.stringify\(\{ enabled \}\)/);
   assert.match(source, /sendAgentCommand\(sessionId, \{ type: "reload" \}\)/);
   assert.match(source, /reloadNeeded && sessionId/);
-  assert.match(source, /className="agents-concurrency-control"[\s\S]*?t\("agents\.maxConcurrent"\)/);
+  assert.match(source, /backend !== "none"[\s\S]*?className="agents-concurrency-control"[\s\S]*?t\("agents\.maxConcurrent"\)/);
   assert.equal((source.match(/className="agents-feature-setting"/g) ?? []).length, 1);
   assert.match(cssSource, /\.agents-feature-setting \{[\s\S]*?border-bottom: 1px solid var\(--border\)/);
   assert.match(cssSource, /\.agents-concurrency-control \{[\s\S]*?white-space: nowrap;/);
@@ -70,11 +73,11 @@ test("shows a Skills-style path row with the same switch in editable and readonl
   assert.doesNotMatch(source, /<Toggle label=\{t\("agents\.enabled"\)\}/);
 });
 
-test("keeps the enabled switch live for built-ins whose fields stay read-only", () => {
+test("keeps Pi Web built-in profile toggles live and nicobailon built-ins read-only", () => {
   assert.match(source, /function isTogglableScope\(scope: SubagentScope\): boolean \{\s*return isWritableScope\(scope\) \|\| scope === "builtin";/);
-  assert.match(source, /const switchDisabled = creating\s*\? disabled\s*: !selected \|\| !isTogglableScope\(selected\.scope\) \|\| saving \|\| toggling;/);
+  assert.match(source, /const switchDisabled = creating[\s\S]*?backend === "nicobailon" && selected\.scope === "builtin"[\s\S]*?saving[\s\S]*?toggling;/);
   assert.match(source, /if \(!selected \|\| !isTogglableScope\(selected\.scope\)\) return;/);
-  // Everything else on a built-in stays read-only: only the switch has somewhere to write.
+  // Built-in fields remain read-only; only Pi Web's own built-in enable state is writable.
   assert.match(source, /setMode\(isWritableScope\(profile\.scope\) \? "edit" : "view"\)/);
 });
 
