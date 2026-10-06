@@ -3,12 +3,18 @@
 import { useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
+import type {
+  NicobailonAsyncNode,
+  NicobailonAsyncSnapshot,
+  NicobailonAsyncState,
+} from "@/lib/nicobailon-async-snapshot";
 
 interface Props {
   rootSession: SessionInfo;
   subagents: SessionInfo[];
   selectedSessionId: string;
   runningSessionIds: ReadonlySet<string>;
+  workflowSnapshot?: NicobailonAsyncSnapshot | null;
   onSelectSession: (session: SessionInfo) => void;
 }
 
@@ -65,6 +71,132 @@ function StatusIcon({ status }: { status: SubagentSessionStatus }) {
       <circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" />
     </svg>
   );
+}
+
+function workflowStatusToSessionStatus(state: NicobailonAsyncState): SubagentSessionStatus {
+  if (state === "running") return "running";
+  if (state === "queued") return "starting";
+  if (state === "complete") return "completed";
+  if (state === "failed" || state === "rejected") return "failed";
+  if (state === "stopped") return "aborted";
+  return "interrupted";
+}
+
+function formatDurationMs(startedAt?: number, endedAt?: number): string {
+  if (startedAt === undefined) return "";
+  const end = endedAt ?? Date.now();
+  const totalSeconds = Math.max(0, Math.floor((end - startedAt) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function WorkflowNodeRow({ node, depth = 0 }: { node: NicobailonAsyncNode; depth?: number }) {
+  const { t } = useI18n();
+  const mappedStatus = workflowStatusToSessionStatus(node.state);
+  const duration = formatDurationMs(node.startedAt, node.endedAt);
+  const activity = node.activity?.currentTool;
+  return (
+    <div>
+      <div
+        style={{
+          minHeight: 34,
+          display: "grid",
+          gridTemplateColumns: "18px minmax(0, 1fr) auto",
+          alignItems: "center",
+          gap: 7,
+          padding: `5px 10px 5px ${24 + depth * 14}px`,
+          borderTop: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
+          color: "var(--text)",
+        }}
+      >
+        <span style={{ display: "grid", placeItems: "center", color: statusColor(mappedStatus) }}>
+          <StatusIcon status={mappedStatus} />
+        </span>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, fontWeight: 500 }} title={node.label}>
+            {node.label}
+          </span>
+          {(activity || duration) && (
+            <span style={{ display: "block", marginTop: 1, color: "var(--text-dim)", fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {[activity, duration].filter(Boolean).join(" · ")}
+            </span>
+          )}
+        </span>
+        <span style={{ color: statusColor(mappedStatus), fontSize: 10.5, whiteSpace: "nowrap" }}>
+          {t(`agentSwitcher.workflowStatus.${node.state}`)}
+        </span>
+      </div>
+      {node.children?.map((child) => (
+        <WorkflowNodeRow key={child.id} node={child} depth={depth + 1} />
+      ))}
+    </div>
+  );
+}
+
+function WorkflowRunCard({ run, generatedAt }: { run: NicobailonAsyncNode; generatedAt: number }) {
+  const { locale, t } = useI18n();
+  const mappedStatus = workflowStatusToSessionStatus(run.state);
+  const updated = formatRelativeTime(new Date(generatedAt).toISOString(), locale);
+  const duration = formatDurationMs(run.startedAt, run.endedAt);
+  const childCount = run.children?.length ?? 0;
+
+  return (
+    <details
+      defaultOpen={run.state === "running" || run.state === "queued"}
+      style={{
+        borderBottom: "1px solid var(--border)",
+        background: run.state === "running"
+          ? "color-mix(in srgb, var(--accent) 4%, transparent)"
+          : "transparent",
+      }}
+    >
+      <summary
+        style={{
+          minHeight: 48,
+          display: "grid",
+          gridTemplateColumns: "24px minmax(0, 1fr) auto",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 12px",
+          cursor: "pointer",
+          listStyle: "none",
+        }}
+      >
+        <span style={{ width: 24, height: 24, display: "grid", placeItems: "center", color: statusColor(mappedStatus) }}>
+          <StatusIcon status={mappedStatus} />
+        </span>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: 600 }} title={run.label}>
+            {run.kind === "workflow" ? t("agentSwitcher.workflow") : t("agentSwitcher.run")} · {run.label}
+          </span>
+          <span style={{ display: "block", marginTop: 2, color: "var(--text-dim)", fontSize: 10.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {[
+              childCount > 0 ? t("agentSwitcher.stepCount", { count: childCount }) : null,
+              duration || null,
+              t("agentSwitcher.updated", { time: updated }),
+            ].filter(Boolean).join(" · ")}
+          </span>
+        </span>
+        <span style={{ color: statusColor(mappedStatus), fontSize: 10.5, whiteSpace: "nowrap" }}>
+          {t(`agentSwitcher.workflowStatus.${run.state}`)}
+        </span>
+      </summary>
+      {run.children?.map((child) => (
+        <WorkflowNodeRow key={child.id} node={child} />
+      ))}
+    </details>
+  );
+}
+
+function countRunningWorkflowLeaves(nodes: readonly NicobailonAsyncNode[]): number {
+  return nodes.reduce((total, node) => {
+    if (node.children?.length) return total + countRunningWorkflowLeaves(node.children);
+    return total + (node.state === "running" ? 1 : 0);
+  }, 0);
 }
 
 function AgentRow({
@@ -150,7 +282,7 @@ function AgentRow({
   );
 }
 
-export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, runningSessionIds, onSelectSession }: Props) {
+export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, runningSessionIds, workflowSnapshot, onSelectSession }: Props) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const sortedSubagents = useMemo(() => [...subagents].sort((a, b) => {
@@ -168,6 +300,9 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
       })
     : sortedSubagents;
   const runningCount = subagents.filter((session) => runningSessionIds.has(session.id)).length;
+  const workflowRuns = workflowSnapshot?.runs ?? [];
+  const workflowRunningCount = countRunningWorkflowLeaves(workflowRuns);
+  const displayedRunningCount = Math.max(runningCount, workflowRunningCount);
 
   return (
     <div
@@ -189,9 +324,9 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
           <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
             {t("agentSwitcher.count", { count: subagents.length })}
           </span>
-          {runningCount > 0 && (
+          {displayedRunningCount > 0 && (
             <span style={{ marginLeft: "auto", color: "var(--accent)", fontSize: 11 }}>
-              {t("agentSwitcher.runningCount", { count: runningCount })}
+              {t("agentSwitcher.runningCount", { count: displayedRunningCount })}
             </span>
           )}
         </div>
@@ -219,6 +354,22 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
             running={runningSessionIds.has(rootSession.id)}
             onSelect={() => onSelectSession(rootSession)}
           />
+          {workflowRuns.length > 0 && (
+            <div aria-label={t("agentSwitcher.workflows")}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "5px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 10.5, fontWeight: 600 }}>
+                <span>{t("agentSwitcher.workflows")}</span>
+                <span style={{ color: "var(--text-dim)", fontWeight: 500 }}>{workflowRuns.length}</span>
+              </div>
+              {workflowRuns.map((run) => (
+                <WorkflowRunCard key={run.id} run={run} generatedAt={workflowSnapshot!.generatedAt} />
+              ))}
+            </div>
+          )}
+          {workflowRuns.length > 0 && visibleSubagents.length > 0 && (
+            <div style={{ minHeight: 28, display: "flex", alignItems: "center", padding: "5px 12px", borderBottom: "1px solid var(--border)", background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 10.5, fontWeight: 600 }}>
+              {t("agentSwitcher.sessions")}
+            </div>
+          )}
           {visibleSubagents.map((session) => (
             <AgentRow
               key={session.id}

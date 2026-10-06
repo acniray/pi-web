@@ -61,6 +61,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { FileViewerState } from "@/lib/file-viewer-state";
 import type { ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
+import type { NicobailonAsyncSnapshot } from "@/lib/nicobailon-async-snapshot";
 import { getLastSettingsSection, settingsSectionRequiresProject, type SettingsSection } from "@/lib/settings-navigation";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
@@ -147,7 +148,10 @@ export function AppShell() {
     () => getSessionFamily(sessionsWithSelection, selectedSession?.id),
     [selectedSession?.id, sessionsWithSelection],
   );
-  const hasSubagentSessions = Boolean(activeSessionFamily?.subagents.length);
+  const [subagentWorkflowSnapshot, setSubagentWorkflowSnapshot] = useState<NicobailonAsyncSnapshot | null>(null);
+  const hasSubagentSessions = Boolean(
+    activeSessionFamily?.subagents.length || subagentWorkflowSnapshot?.runs.length,
+  );
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const handleRunningSessionIdsChange = useCallback((ids: Set<string>) => {
     setRunningSessionIds((previous) => {
@@ -375,6 +379,14 @@ export function AppShell() {
       window.clearInterval(interval);
     };
   }, [activeTopPanel, subagentRootSessionId]);
+  useEffect(() => {
+    setSubagentWorkflowSnapshot(null);
+  }, [subagentRootSessionId]);
+
+  const handleSubagentWorkflowChange = useCallback((snapshot: NicobailonAsyncSnapshot | null) => {
+    setSubagentWorkflowSnapshot(snapshot);
+  }, []);
+
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -2148,6 +2160,7 @@ export function AppShell() {
                   subagents={activeSessionFamily.subagents}
                   selectedSessionId={selectedSession.id}
                   runningSessionIds={runningSessionIds}
+                  workflowSnapshot={subagentWorkflowSnapshot}
                   onSelectSession={handleSelectSession}
                 />
               )}
@@ -2405,6 +2418,9 @@ export function AppShell() {
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onOpenSettings={openSettingsSection}
               onContextUsageChange={handleContextUsageChange}
+              onSubagentWorkflowChange={selectedSession?.relation?.kind === "subagent"
+                ? undefined
+                : handleSubagentWorkflowChange}
               onOpenFile={handleOpenLinkedFile}
               onOpenSession={handleOpenSession}
               onAskInNewChat={handleAskInNewChat}

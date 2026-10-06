@@ -33,3 +33,11 @@ test("shows persisted completion states while live running state takes precedenc
   assert.match(source, /status === "failed"/);
   assert.match(source, /status === "aborted" \|\| status === "interrupted"/);
 });
+
+test("renders nicobailon workflow snapshots inside the existing Agents panel", () => {
+  assert.match(source, /workflowSnapshot\?: NicobailonAsyncSnapshot/);
+  assert.match(source, /workflowRuns\.map\(\(run\) =>/);
+  assert.match(source, /<WorkflowRunCard key=\{run\.id\}/);
+  assert.match(source, /node\.activity\?\.currentTool/);
+  assert.match(source, /agentSwitcher\.workflowStatus\.\$\{node\.state\}/);
+});
