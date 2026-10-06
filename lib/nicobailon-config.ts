@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getPackageDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -50,36 +49,14 @@ export function writeNicobailonGlobalConcurrencyLimit(
   return readNicobailonGlobalConcurrencyLimit(configPath);
 }
 
-export function findPackageRootFromEntry(
-  entryPoint: string,
-  packageName = PI_CODING_AGENT_PACKAGE,
-): string | undefined {
-  let dir: string;
-  try {
-    dir = dirname(realpathSync(entryPoint));
-  } catch {
-    return undefined;
-  }
-  while (true) {
-    const packageJsonPath = join(dir, "package.json");
-    if (existsSync(packageJsonPath)) {
-      try {
-        const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
-        if (pkg.name === packageName) return dir;
-      } catch {
-        // Continue walking; an enclosing package may still be the requested one.
-      }
-    }
-    const parent = dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
-}
-
 export function resolvePiCodingAgentPackageRoot(): string | undefined {
   try {
-    const require = createRequire(import.meta.url);
-    return findPackageRootFromEntry(require.resolve(PI_CODING_AGENT_PACKAGE));
+    // This is the package directory of the exact SDK instance Pi Web imported.
+    // Unlike createRequire(import.meta.url), it survives Next.js server bundling
+    // because the SDK itself owns the lookup.
+    const root = realpathSync(getPackageDir());
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown };
+    return pkg.name === PI_CODING_AGENT_PACKAGE ? root : undefined;
   } catch {
     return undefined;
   }
