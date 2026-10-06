@@ -73,12 +73,17 @@ test("shows a Skills-style path row with the same switch in editable and readonl
   assert.doesNotMatch(source, /<Toggle label=\{t\("agents\.enabled"\)\}/);
 });
 
-test("keeps Pi Web built-in profile toggles live and nicobailon built-ins read-only", () => {
+test("keeps the enabled switch live for built-ins whose fields stay read-only", () => {
   assert.match(source, /function isTogglableScope\(scope: SubagentScope\): boolean \{\s*return isWritableScope\(scope\) \|\| scope === "builtin";/);
-  assert.match(source, /const switchDisabled = creating[\s\S]*?backend === "nicobailon" && selected\.scope === "builtin"[\s\S]*?saving[\s\S]*?toggling;/);
+  assert.match(source, /const switchDisabled = creating\s*\? disabled\s*: !selected \|\| !isTogglableScope\(selected\.scope\) \|\| saving \|\| toggling;/);
   assert.match(source, /if \(!selected \|\| !isTogglableScope\(selected\.scope\)\) return;/);
-  // Built-in fields remain read-only; only Pi Web's own built-in enable state is writable.
+  // Everything else on a built-in stays read-only: only the switch has somewhere to write.
   assert.match(source, /setMode\(isWritableScope\(profile\.scope\) \? "edit" : "view"\)/);
+});
+
+test("keeps nicobailon built-in profiles read-only without rewriting the shared switch rule", () => {
+  assert.match(source, /const backendReadOnly = backend === "nicobailon" && selected\?\.scope === "builtin";/);
+  assert.match(source, /const disabled = !editing \|\| backendReadOnly \|\| saving \|\| toggling;/);
 });
 
 test("persists existing profile toggles immediately without submitting unsaved fields", () => {

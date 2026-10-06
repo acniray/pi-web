@@ -360,7 +360,8 @@ export function AgentsConfig({
 
   const editing = mode !== "view";
   const creating = mode === "create";
-  const disabled = !editing || saving || toggling;
+  const backendReadOnly = backend === "nicobailon" && selected?.scope === "builtin";
+  const disabled = !editing || backendReadOnly || saving || toggling;
   const displayedScope = creating ? targetScope : selected?.scope;
   const displayedPath = creating
     ? targetScope === "global"
@@ -381,11 +382,7 @@ export function AgentsConfig({
   const controlStyle = disabled ? { ...inputStyle, ...disabledInputStyle } : inputStyle;
   const switchDisabled = creating
     ? disabled
-    : !selected
-      || !isTogglableScope(selected.scope)
-      || (backend === "nicobailon" && selected.scope === "builtin")
-      || saving
-      || toggling;
+    : !selected || !isTogglableScope(selected.scope) || saving || toggling;
   const update = <K extends keyof EditableProfile>(key: K, value: EditableProfile[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
