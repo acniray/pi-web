@@ -6,6 +6,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
+import { ensureNicobailonHostEnvironment } from "./nicobailon-config";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import {
   createProjectCommandBashExtension,
@@ -2360,6 +2361,11 @@ export async function startRpcSession(
     const builtins = subagentResources || chatOnly
       ? undefined
       : await createPiWebBuiltinExtensions({ agentDir });
+    // pi-subagents' async runner cannot infer the Pi SDK from a wrapper host's
+    // process.argv[1]. Set its documented override before resource loading,
+    // even when another backend is selected now, so a later reload can switch
+    // to nicobailon without reusing a module initialized with an empty root.
+    if (!subagentResources && !chatOnly) ensureNicobailonHostEnvironment();
     const services = await createAgentSessionServices({
       cwd: sessionCwd,
       agentDir,

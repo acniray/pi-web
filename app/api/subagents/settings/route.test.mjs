@@ -30,21 +30,21 @@ function request(body, contentType = "application/json") {
   });
 }
 
-test("settings route defaults off and persists both switch states", async () => {
+test("settings route defaults to no backend and keeps legacy enabled mutations compatible", async () => {
   let response = await GET();
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, backend: "builtin" });
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, backend: "none" });
 
   response = await PUT(request({ enabled: true }));
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 10, backend: "builtin" });
   assert.deepEqual(
     JSON.parse(await readFile(join(testAgentDir, "agents", "settings.json"), "utf8")),
-    { version: 1, builtInEnabled: true },
+    { version: 1, backend: "builtin", builtInEnabled: true },
   );
 
   response = await PUT(request({ enabled: false }));
-  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, backend: "builtin" });
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, backend: "none" });
 });
 
 test("settings route validates mutations", async () => {
@@ -58,20 +58,41 @@ test("settings route validates mutations", async () => {
 
   response = await PUT(request({ backend: "other" }));
   assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { error: "backend must be builtin or nicobailon" });
+  assert.deepEqual(await response.json(), { error: "backend must be none, builtin or nicobailon" });
 
   response = await PUT(request({ backend: "nicobailon" }));
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).backend, "nicobailon");
+  assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 20, backend: "nicobailon" });
+  response = await PUT(request({ backend: "none" }));
+  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 10, backend: "none" });
   response = await PUT(request({ backend: "builtin" }));
   assert.equal((await response.json()).backend, "builtin");
 });
 
-test("settings route validates and persists concurrency", async () => {
+test("settings route validates and persists backend-specific concurrency", async () => {
+  await PUT(request({ backend: "builtin" }));
   let response = await PUT(request({ maxConcurrent: 2 }));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: false, maxConcurrent: 2, backend: "builtin" });
+  assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 2, backend: "builtin" });
   response = await PUT(request({ maxConcurrent: 0 }));
   assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /positive safe integer/);
+
+  response = await PUT(request({ maxConcurrent: 33 }));
+  assert.equal(response.status, 400);
   assert.match((await response.json()).error, /between 1 and 32/);
+
+  response = await PUT(request({ backend: "nicobailon" }));
+  assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 20, backend: "nicobailon" });
+  response = await PUT(request({ maxConcurrent: 37 }));
+  assert.deepEqual(await response.json(), { enabled: true, maxConcurrent: 37, backend: "nicobailon" });
+  assert.equal(
+    JSON.parse(await readFile(join(testAgentDir, "extensions", "subagent", "config.json"), "utf8")).globalConcurrencyLimit,
+    37,
+  );
+
+  await PUT(request({ backend: "none" }));
+  response = await PUT(request({ maxConcurrent: 2 }));
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /requires an enabled subagent backend/);
 });

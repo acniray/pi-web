@@ -325,6 +325,8 @@ export function createSubagentExtension(
  * - nicobailon: the Pi Web factory stays loaded but registers no tools; remove
  *   only the legacy reserved-tool implementation and leave an installed
  *   nicobailon/pi-subagents extension (which exposes `subagent`) untouched.
+ * - none: neither Pi Web nor an installed pi-subagents orchestrator exposes
+ *   subagent control tools.
  */
 export function preferPiWebSubagentExtension(
   base: LoadExtensionsResult,

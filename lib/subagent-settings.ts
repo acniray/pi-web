@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 
-export type SubagentBackend = "builtin" | "nicobailon";
+export type SubagentBackend = "none" | "builtin" | "nicobailon";
 
 export interface SubagentSettings {
   builtInEnabled: boolean;
@@ -24,10 +24,12 @@ type StoredSubagentSettings = Record<string, unknown> & {
 
 export const DEFAULT_SUBAGENT_MAX_CONCURRENT = 10;
 export const MAX_SUBAGENT_MAX_CONCURRENT = 32;
-export const DEFAULT_SUBAGENT_BACKEND: SubagentBackend = "builtin";
+export const DEFAULT_SUBAGENT_BACKEND: SubagentBackend = "none";
 
-function readBackend(value: unknown): SubagentBackend {
-  return value === "nicobailon" ? "nicobailon" : DEFAULT_SUBAGENT_BACKEND;
+function readBackend(value: unknown, legacyBuiltInEnabled: boolean): SubagentBackend {
+  if (value === "none" || value === "builtin" || value === "nicobailon") return value;
+  // Pre-backend settings used only builtInEnabled. Preserve their behavior.
+  return legacyBuiltInEnabled ? "builtin" : DEFAULT_SUBAGENT_BACKEND;
 }
 
 function readMaxConcurrent(value: unknown): number {
@@ -94,11 +96,12 @@ export function readSubagentSettings(
   settingsPath = getSubagentSettingsPath(),
 ): SubagentSettings {
   const stored = readStoredSettings(settingsPath);
+  const backend = readBackend(stored.backend, stored.builtInEnabled === true);
   return settingsValue(
-    stored.builtInEnabled === true,
+    backend === "builtin",
     readMaxConcurrent(stored.maxConcurrent),
     readDisabledBuiltIns(stored.disabledBuiltIns),
-    readBackend(stored.backend),
+    backend,
   );
 }
 
@@ -133,25 +136,21 @@ export function isBuiltInSubagentsEnabled(
   settingsPath = getSubagentSettingsPath(),
 ): boolean {
   try {
-    const settings = readSubagentSettings(settingsPath);
-    return settings.backend === "builtin" && settings.builtInEnabled;
+    return readSubagentSettings(settingsPath).backend === "builtin";
   } catch {
     return false;
   }
 }
 
+/**
+ * Legacy API kept for callers from older Pi Web builds. Backend selection is
+ * now authoritative: true selects Pi Web, false selects no subagent backend.
+ */
 export function writeBuiltInSubagentsEnabled(
   enabled: boolean,
   settingsPath = getSubagentSettingsPath(),
 ): SubagentSettings {
-  const stored = readStoredSettings(settingsPath);
-  mkdirSync(dirname(settingsPath), { recursive: true });
-  writePrivateFileAtomicSync(settingsPath, JSON.stringify({
-    ...stored,
-    version: 1,
-    builtInEnabled: enabled,
-  }, null, 2));
-  return readSubagentSettings(settingsPath);
+  return writeSubagentBackend(enabled ? "builtin" : "none", settingsPath);
 }
 
 /** Minimal edit of the stored list: names this call did not touch are left as authored. */
@@ -201,8 +200,8 @@ export function writeSubagentBackend(
   backend: SubagentBackend,
   settingsPath = getSubagentSettingsPath(),
 ): SubagentSettings {
-  if (backend !== "builtin" && backend !== "nicobailon") {
-    throw new Error("backend must be builtin or nicobailon");
+  if (backend !== "none" && backend !== "builtin" && backend !== "nicobailon") {
+    throw new Error("backend must be none, builtin or nicobailon");
   }
   const stored = readStoredSettings(settingsPath);
   mkdirSync(dirname(settingsPath), { recursive: true });
@@ -210,6 +209,8 @@ export function writeSubagentBackend(
     ...stored,
     version: 1,
     backend,
+    // Keep the old field coherent for older Pi Web builds that may read it.
+    builtInEnabled: backend === "builtin",
   }, null, 2));
   return readSubagentSettings(settingsPath);
 }

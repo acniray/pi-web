@@ -174,8 +174,7 @@ export function AgentsConfig({
   const [savedOk, setSavedOk] = useState(false);
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [builtInEnabled, setBuiltInEnabled] = useState(false);
-  const [backend, setBackend] = useState<SubagentBackend>("builtin");
+  const [backend, setBackend] = useState<SubagentBackend>("none");
   const [maxConcurrent, setMaxConcurrent] = useState(10);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -236,11 +235,11 @@ export function AgentsConfig({
           signal: controller.signal,
         });
         const data = await response.json() as Partial<SubagentSettingsResponse> & { error?: string };
-        if (!response.ok || data.error || typeof data.enabled !== "boolean") {
+        if (!response.ok || data.error
+          || (data.backend !== "none" && data.backend !== "builtin" && data.backend !== "nicobailon")) {
           throw new Error(data.error ?? `HTTP ${response.status}`);
         }
-        setBuiltInEnabled(data.enabled);
-        if (data.backend === "builtin" || data.backend === "nicobailon") setBackend(data.backend);
+        setBackend(data.backend);
         if (typeof data.maxConcurrent === "number") setMaxConcurrent(data.maxConcurrent);
       } catch (cause) {
         if (controller.signal.aborted) return;
@@ -417,28 +416,6 @@ export function AgentsConfig({
     }
   };
 
-  const toggleBuiltInSubagents = async (enabled: boolean) => {
-    setSettingsSaving(true);
-    setSettingsError(null);
-    try {
-      const response = await fetch("/api/subagents/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      const data = await response.json() as Partial<SubagentSettingsResponse> & { error?: string };
-      if (!response.ok || data.error || typeof data.enabled !== "boolean") {
-        throw new Error(data.error ?? `HTTP ${response.status}`);
-      }
-      setBuiltInEnabled(data.enabled);
-      setReloadNeeded(Boolean(sessionId));
-    } catch (cause) {
-      setSettingsError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setSettingsSaving(false);
-    }
-  };
-
   const updateBackend = async (nextBackend: SubagentBackend) => {
     setSettingsSaving(true);
     setSettingsError(null);
@@ -449,10 +426,12 @@ export function AgentsConfig({
         body: JSON.stringify({ backend: nextBackend }),
       });
       const data = await response.json() as Partial<SubagentSettingsResponse> & { error?: string };
-      if (!response.ok || data.error || (data.backend !== "builtin" && data.backend !== "nicobailon")) {
+      if (!response.ok || data.error
+        || (data.backend !== "none" && data.backend !== "builtin" && data.backend !== "nicobailon")) {
         throw new Error(data.error ?? `HTTP ${response.status}`);
       }
       setBackend(data.backend);
+      if (typeof data.maxConcurrent === "number") setMaxConcurrent(data.maxConcurrent);
       await loadProfiles();
       setReloadNeeded(Boolean(sessionId));
     } catch (cause) {
@@ -464,6 +443,7 @@ export function AgentsConfig({
 
   const updateMaxConcurrent = async (value: number) => {
     setMaxConcurrent(value);
+    setSettingsSaving(true);
     setSettingsError(null);
     try {
       const response = await fetch("/api/subagents/settings", {
@@ -474,8 +454,11 @@ export function AgentsConfig({
       const data = await response.json() as Partial<SubagentSettingsResponse> & { error?: string };
       if (!response.ok || data.error || typeof data.maxConcurrent !== "number") throw new Error(data.error ?? `HTTP ${response.status}`);
       setMaxConcurrent(data.maxConcurrent);
+      if (backend === "nicobailon") setReloadNeeded(Boolean(sessionId));
     } catch (cause) {
       setSettingsError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSettingsSaving(false);
     }
   };
 
@@ -499,7 +482,13 @@ export function AgentsConfig({
       <div className="agents-feature-setting">
         <div className="agents-feature-copy">
           <strong>{t("agents.backendTitle")}</strong>
-          <span>{backend === "nicobailon" ? t("agents.backendNicobailonDescription") : t("agents.builtInDescription")}</span>
+          <span>{
+            backend === "nicobailon"
+              ? t("agents.backendNicobailonDescription")
+              : backend === "builtin"
+                ? t("agents.builtInDescription")
+                : t("agents.backendNoneDescription")
+          }</span>
           {reloadNeeded && <span role="status" className="agents-feature-reload-notice">{t("agents.reloadRequired")}</span>}
         </div>
         <div className="agents-feature-actions">
@@ -517,33 +506,25 @@ export function AgentsConfig({
               onChange={(event) => void updateBackend(event.target.value as SubagentBackend)}
               style={{ ...inputStyle, width: "auto", minWidth: 160 }}
             >
+              <option value="none">{t("agents.backend.none")}</option>
               <option value="builtin">{t("agents.backend.builtin")}</option>
               <option value="nicobailon">{t("agents.backend.nicobailon")}</option>
             </select>
           </label>
-          {backend === "builtin" && (
-            <>
-              <label className="agents-concurrency-control" title={t("agents.maxConcurrentDescription")}>
-                <span>{t("agents.maxConcurrent")}</span>
-                <input
-                  aria-label={t("agents.maxConcurrent")}
-                  type="number"
-                  min={1}
-                  max={32}
-                  value={maxConcurrent}
-                  disabled={settingsLoading || settingsSaving}
-                  onChange={(event) => setMaxConcurrent(Number(event.target.value))}
-                  onBlur={() => void updateMaxConcurrent(maxConcurrent)}
-                />
-              </label>
-              <ConfigSwitch
-                checked={builtInEnabled}
-                disabled={settingsLoading || settingsSaving || reloading}
-                loading={settingsSaving}
-                label={t("agents.builtInTitle")}
-                onChange={(enabled) => void toggleBuiltInSubagents(enabled)}
+          {backend !== "none" && (
+            <label className="agents-concurrency-control" title={t("agents.maxConcurrentDescription")}>
+              <span>{t("agents.maxConcurrent")}</span>
+              <input
+                aria-label={t("agents.maxConcurrent")}
+                type="number"
+                min={1}
+                max={backend === "builtin" ? 32 : undefined}
+                value={maxConcurrent}
+                disabled={settingsLoading || settingsSaving}
+                onChange={(event) => setMaxConcurrent(Number(event.target.value))}
+                onBlur={() => void updateMaxConcurrent(maxConcurrent)}
               />
-            </>
+            </label>
           )}
         </div>
       </div>

@@ -6,7 +6,7 @@ export interface SubagentProfilesResponse {
   profiles: SubagentProfile[];
 }
 
-export type SubagentBackend = "builtin" | "nicobailon";
+export type SubagentBackend = "none" | "builtin" | "nicobailon";
 
 export interface SubagentSettingsResponse {
   enabled: boolean;
