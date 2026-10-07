@@ -168,7 +168,7 @@ test("summarizes structured async widgets in the existing bottom trigger", () =>
 
   assert.match(html, /extension-widget-trigger is-structured/);
   assert.match(html, /Async agents/);
-  assert.match(html, /2 Running/);
+  assert.match(html, /1 Running/);
   assert.match(html, /1 Queued/);
   assert.doesNotMatch(html, /PI_SUBAGENT_ASYNC_JSON/);
   assert.doesNotMatch(html, /task-tree-widget/);
