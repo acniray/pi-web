@@ -18,6 +18,9 @@ export interface TaskTreeActivity {
 }
 
 export interface TaskTreeNode {
+  /** Stable identity inside this rendered tree; adapters may namespace source ids. */
+  key: string;
+  /** Source protocol identity, preserved for future inspect/control actions. */
   id: string;
   label: string;
   state: TaskTreeState;
@@ -79,18 +82,25 @@ export function countTaskTreeStates(nodes: readonly TaskTreeNode[]): TaskTreeSta
 
 export function findTaskTreeNode(
   nodes: readonly TaskTreeNode[],
-  id: string | null,
+  key: string | null,
 ): TaskTreeNode | null {
-  if (!id) return null;
+  if (!key) return null;
   for (const node of nodes) {
-    if (node.id === id) return node;
-    const nested = findTaskTreeNode(node.children ?? [], id);
+    if (node.key === key) return node;
+    const nested = findTaskTreeNode(node.children ?? [], key);
     if (nested) return nested;
   }
   return null;
 }
 
 export function firstTaskTreeNode(nodes: readonly TaskTreeNode[]): TaskTreeNode | null {
-  const active = nodes.find((node) => node.state === "running" || node.state === "queued");
-  return active ?? nodes[0] ?? null;
+  for (const node of nodes) {
+    if (node.state !== "running" && node.state !== "queued") continue;
+    const activeChild = firstTaskTreeNode(
+      (node.children ?? []).filter((child) => child.state === "running" || child.state === "queued"),
+    );
+    if (activeChild) return activeChild;
+    return node;
+  }
+  return nodes[0] ?? null;
 }
