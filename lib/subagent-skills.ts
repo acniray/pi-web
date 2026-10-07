@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { formatSkillsForPrompt, type DefaultResourceLoader, type InlineExtension, type Skill } from "@earendil-works/pi-coding-agent";
 import { parseFrontmatter } from "./frontmatter";
-import { validateSubagentSkills } from "./subagents";
+import { subagentSkillNames } from "./subagents";
 
 /** One discovery binding and one prompt projection, shared by spawn and reopen. */
 export function createSubagentSkillsBinding(options: {
@@ -9,21 +9,21 @@ export function createSubagentSkillsBinding(options: {
   skills?: readonly string[];
   exactSystemPrompt?: string;
 }) {
-  const names = options.skills === undefined ? undefined : validateSubagentSkills(options.skills);
+  // `load_skills: false` wins over a list.
+  const names = options.loadSkills && options.skills !== undefined ? subagentSkillNames(options.skills) : undefined;
   let discovered: Skill[] = [];
   let activeTools: () => readonly string[] = () => [];
   let effectiveExactPrompt = options.exactSystemPrompt;
   const suffix = (): string => {
     if (!options.loadSkills) return "";
     if (names === undefined) {
+      // Replace mode keeps the catalog, as pi does under `--system-prompt`.
       const tools = activeTools();
       const reader = tools.includes("read") ? "read" : tools.includes("bash") ? "bash" : undefined;
       return reader ? formatSkillsForPrompt(discovered, reader) : "";
     }
+    // Names are only looked up among the skills the SDK discovered, never used as paths.
     return names.map((name) => {
-      if (name.length > 128 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
-        return `Skill ${JSON.stringify(name)} skipped: unsafe name.`;
-      }
       const skill = discovered.find((item) => item.name === name);
       if (!skill) return `Skill ${JSON.stringify(name)} not found in SDK discovery.`;
       try {
@@ -39,22 +39,24 @@ export function createSubagentSkillsBinding(options: {
     hidden: true,
     factory: (pi) => {
       pi.on("before_agent_start", (event) => {
-        const base = options.exactSystemPrompt ?? event.systemPrompt;
         const skillsText = suffix();
+        if (!skillsText && options.exactSystemPrompt === undefined) return undefined;
+        const base = options.exactSystemPrompt ?? event.systemPrompt;
         const prompt = skillsText ? `${base}\n\n${skillsText}` : base;
         if (options.exactSystemPrompt !== undefined) effectiveExactPrompt = prompt;
         return { systemPrompt: prompt };
       });
     },
   };
-  const needsProjection = (options.loadSkills && names !== undefined) || options.exactSystemPrompt !== undefined;
+  const needsProjection = names !== undefined || options.exactSystemPrompt !== undefined;
   const loaderOptions: Pick<ConstructorParameters<typeof DefaultResourceLoader>[0], "noSkills" | "skillsOverride" | "extensionFactories"> = {
+    // Off means pi's `noSkills`, which still keeps the skills an extension provides.
     noSkills: !options.loadSkills,
-    ...(!options.loadSkills || needsProjection ? {
+    ...(options.loadSkills && needsProjection ? {
       skillsOverride: (base) => {
         // Keep SDK collision winners and diagnostics, but hide the catalog in named mode.
         discovered = base.skills;
-        return !options.loadSkills || names !== undefined ? { ...base, skills: [] } : base;
+        return names !== undefined ? { ...base, skills: [] } : base;
       },
     } : {}),
     ...(needsProjection ? { extensionFactories: [compose] } : {}),

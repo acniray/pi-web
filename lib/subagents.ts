@@ -213,23 +213,36 @@ function resourceBoolean(value: unknown, fallback: boolean): boolean {
   return Array.isArray(value) || typeof value === "string" ? true : fallback;
 }
 
-/** Scope lists are validated separately from permissive tool selectors. */
-export function validateSubagentSkills(value: unknown): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) {
-    throw new Error("skills must be a list of nonempty strings");
-  }
-  return [...new Set(value.map((item: string) => item.trim()))];
+/**
+ * Skill names from a list or a comma-separated string, trimmed and deduplicated. Empty
+ * and non-string items are dropped, as pi-subagents does: a stray comma must not make
+ * the whole profile unreadable.
+ */
+export function subagentSkillNames(value: unknown): string[] {
+  const items: unknown[] = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return [...new Set(items
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean))];
 }
 
+/**
+ * The skills a profile names in `skills:`. `undefined` keeps the SDK's on-demand catalog:
+ * the key is absent or empty, or holds a switch spelling (`true`, `all`, `none`, ...) that
+ * `load_skills` falls back to and a save keeps in step with it.
+ */
 function profileSkills(value: unknown): string[] | undefined {
-  if (value === undefined || typeof value === "boolean") return undefined;
-  if (typeof value === "string") {
-    const alias = value.trim().toLowerCase();
-    if (alias === "all" || alias === "true") return undefined;
-    if (alias === "none" || alias === "false") return [];
-    return validateSubagentSkills(value.split(","));
-  }
-  return validateSubagentSkills(value);
+  if (Array.isArray(value)) return subagentSkillNames(value);
+  if (typeof value !== "string" || OWNED_ALIAS_VALUES.has(value.trim().toLowerCase())) return undefined;
+  const names = subagentSkillNames(value);
+  return names.length > 0 ? names : undefined;
+}
+
+/** `load_skills`, else the `skills` alias, where `none` and `false` switch skills off. */
+function profileLoadSkills(data: Record<string, unknown> | null): boolean {
+  const value = data?.load_skills ?? data?.skills;
+  if (typeof value === "string" && ["none", "false"].includes(value.trim().toLowerCase())) return false;
+  return resourceBoolean(value, false);
 }
 
 function stringList(value: unknown): string[] {
@@ -339,7 +352,7 @@ function parseProfileFile(filePath: string, scope: SubagentScope): SubagentProfi
       ...(extensionTools.length > 0 ? { extensionTools } : {}),
       ...(disallowedExtensionTools.length > 0 ? { disallowedExtensionTools } : {}),
       ...(skills !== undefined ? { skills } : {}),
-      loadSkills: resourceBoolean(data?.load_skills ?? data?.skills, false),
+      loadSkills: profileLoadSkills(data),
       loadExtensions: resourceBoolean(data?.load_extensions ?? data?.extensions, extensionTools.length > 0),
       ...(stringValue(data?.model) ? { model: stringValue(data?.model) } : {}),
       ...(thinkingValue && THINKING_LEVELS.has(thinkingValue) ? { thinking: thinkingValue } : {}),
@@ -489,7 +502,7 @@ export function saveSubagentProfile(
     run_in_background: profile.runInBackground,
     prompt_mode: promptMode,
   };
-  const skills = profile.skills === undefined ? profileSkills(stored.skills) : validateSubagentSkills(profile.skills);
+  const skills = profile.skills === undefined ? profileSkills(stored.skills) : subagentSkillNames(profile.skills);
   if (skills !== undefined) {
     const storedSkills = profileSkills(stored.skills);
     managed.skills = storedSkills !== undefined && JSON.stringify(storedSkills) === JSON.stringify(skills)
@@ -573,7 +586,8 @@ export function readSubagentSessionResources(
   const data = subagentMetadataData(entries);
   if (!data) return null;
   const snapshot = data.resourceSnapshot;
-  const skills = isRecord(snapshot) && "skills" in snapshot ? validateSubagentSkills(snapshot.skills) : undefined;
+  // A malformed list narrows to what it names, never back to the whole catalog.
+  const skills = isRecord(snapshot) && "skills" in snapshot ? subagentSkillNames(snapshot.skills) : undefined;
   const loadSkills = isRecord(snapshot) && snapshot.loadSkills === true;
   const loadExtensions = isRecord(snapshot) && snapshot.loadExtensions === true;
   if (

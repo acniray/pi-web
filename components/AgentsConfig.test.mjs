@@ -135,6 +135,21 @@ test("uses the same form controls for editable and readonly profiles", () => {
   assert.doesNotMatch(source, /ReadonlyValue|readonlyPromptStyle|agents-readonly/);
 });
 
+test("shows a profile file's skills list read-only under the skills switch", async () => {
+  const messages = {};
+  for (const locale of ["en", "zh-CN", "zh-TW"]) {
+    messages[locale] = await readFile(new URL(`../lib/i18n/messages/${locale}.ts`, import.meta.url), "utf8");
+  }
+  assert.match(source, /\{draft\.loadSkills && draft\.skills !== undefined && \(/);
+  assert.match(source, /t\("agents\.skillsOnly", \{ skills: draft\.skills\.join\(", "\) \}\)/);
+  assert.match(source, /: t\("agents\.skillsNone"\)/);
+  for (const text of Object.values(messages)) {
+    assert.match(text, /"agents\.skillsOnly": "[^"]*\{skills\}[^"]*"/);
+    assert.match(text, /"agents\.skillsNone": "/);
+  }
+  assert.match(messages["zh-CN"], /"agents\.skillsOnly": "只加载：\{skills\}"/);
+});
+
 test("shows disabled controls with a gray background", () => {
   const disabledStyle = source.match(/const disabledInputStyle: CSSProperties = \{([\s\S]*?)\n\};/)?.[1] ?? "";
   assert.match(source, /<textarea[^>]*aria-label=\{t\("agents\.prompt"\)\}[\s\S]*?disabled=\{disabled\}/);

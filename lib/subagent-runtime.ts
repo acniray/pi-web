@@ -19,7 +19,6 @@ import {
 } from "./subagent-extension";
 import {
   readSubagentRun,
-  readSubagentSessionResources,
   resolveSubagentProfile,
   SUBAGENT_CONTROL_TOOL_NAMES,
   SUBAGENT_META_TYPE,
@@ -494,7 +493,6 @@ export function createSubagentController(
     if (!sessionPath) throw new Error(`Subagent session file not found: ${request.sessionId}`);
     let wrapper = dependencies.getSession(request.sessionId);
     if (!wrapper?.isAlive()) wrapper = await dependencies.reopenSession(request.sessionId, sessionPath);
-    readSubagentSessionResources(wrapper.inner.sessionManager.getEntries() as unknown as SessionEntry[]);
     if (!wrapper.isAlive()) throw new Error("Subagent session is no longer available");
     if (wrapper.isRunning()) throw new Error("Subagent is already running");
 

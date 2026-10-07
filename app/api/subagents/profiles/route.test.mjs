@@ -61,7 +61,8 @@ test("profile PUT and PATCH retain authored named/empty skills, activation and f
       const response = await PATCH(jsonRequest("PATCH", { cwd, scope: "project", name: "api-test-agent", enabled }));
       assert.equal(response.status, 200);
       const saved = (await response.json()).profile;
-      assert.deepEqual(saved.skills, authored === '[]' || authored === 'none' ? [] : ["review", "audit"]);
+      // `none` is a switch spelling, kept in step with load_skills like main does, not a list.
+      assert.deepEqual(saved.skills, authored === '[]' ? [] : authored === 'none' ? undefined : ["review", "audit"]);
       assert.equal(saved.loadSkills, false);
       const put = await PUT(jsonRequest("PUT", { cwd, scope: "project", profile: { ...saved, description: "Unrelated edit" } }));
       assert.equal(put.status, 200);
@@ -71,20 +72,20 @@ test("profile PUT and PATCH retain authored named/empty skills, activation and f
       const stored = parseFrontmatter(text).data.skills;
       if (authored === '"review, audit"') assert.equal(stored, "review, audit");
       if (authored === '[review, audit]') assert.deepEqual(stored, ["review", "audit"]);
-      if (authored === 'none') assert.equal(stored, "none");
+      if (authored === 'none') assert.equal(stored, false);
       if (authored === '[]') assert.deepEqual(stored, []);
     }
   }
 });
 
-test("profile PUT rejects malformed scope lists instead of enabling all skills", async (t) => {
+test("profile PUT narrows malformed skill lists instead of enabling all skills", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "skill-route-invalid-"));
   allowFileRoot(cwd);
   t.after(() => rm(cwd, { recursive: true, force: true }));
-  for (const skills of ["review", [42], [""], null]) {
+  for (const [skills, want] of [["review", ["review"]], [[42], []], [[""], []], [["review", "", " audit "], ["review", "audit"]]]) {
     const response = await PUT(jsonRequest("PUT", { cwd, scope: "project", profile: profile({ skills }) }));
-    assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /skills/);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).profile.skills, want);
   }
 });
 
