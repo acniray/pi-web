@@ -118,7 +118,7 @@ function DetailItem({ label, value }: { label: string; value: string | number | 
 
 export function taskTreeSummaryParts(model: TaskTreeWidgetModel): Array<{ state: TaskTreeState; count: number }> {
   const counts = countTaskTreeLeafStates(model.nodes);
-  return (["running", "queued", "failed", "partial", "paused", "stopped", "complete"] as const)
+  return (["running", "queued", "failed", "rejected", "partial", "paused", "stopped", "complete"] as const)
     .map((state) => ({ state, count: counts[state] }))
     .filter(({ count }) => count > 0);
 }
@@ -133,7 +133,7 @@ export function TaskTreeWidget({ model }: { model: TaskTreeWidgetModel }) {
 
   useEffect(() => {
     if (!findTaskTreeNode(model.nodes, selectedId)) {
-      setSelectedId(firstTaskTreeNode(model.nodes)?.id ?? null);
+      setSelectedId(firstTaskTreeNode(model.nodes)?.key ?? null);
     }
     setExpandedIds((current) => {
       const next = new Set(current);
