@@ -65,6 +65,9 @@ function NodeRow({
   return (
     <>
       <div
+        role="treeitem"
+        aria-level={depth + 1}
+        aria-expanded={hasChildren ? expanded : undefined}
         className={`task-tree-row${selected ? " is-selected" : ""}`}
         data-state={node.state}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
