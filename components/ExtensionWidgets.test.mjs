@@ -157,3 +157,37 @@ test("keeps empty widgets non-interactive", () => {
   assert.doesNotMatch(html, /aria-expanded/);
   assert.match(html, /title="empty-widget - Above editor widget"/);
 });
+
+
+const asyncSnapshotLine = 'PI_SUBAGENT_ASYNC_JSON:{"kind":"pi-subagents.async-status-snapshot","version":1,"generatedAt":5000,"runs":[{"id":"workflow-1","kind":"workflow","label":"review workflow","state":"running","startedAt":1000,"children":[{"id":"step-1","kind":"step","label":"route-callers","state":"running","activity":{"currentTool":"bash","toolCount":4}},{"id":"step-2","kind":"step","label":"review","state":"queued"}]}]}';
+
+test("summarizes structured async widgets in the existing bottom trigger", () => {
+  const html = renderWidgets({
+    widgets: [{ key: "subagent-async", lines: [asyncSnapshotLine], placement: "aboveEditor" }],
+  });
+
+  assert.match(html, /extension-widget-trigger is-structured/);
+  assert.match(html, /Async agents/);
+  assert.match(html, /2 Running/);
+  assert.match(html, /1 Queued/);
+  assert.doesNotMatch(html, /PI_SUBAGENT_ASYNC_JSON/);
+  assert.doesNotMatch(html, /task-tree-widget/);
+});
+
+test("renders the generic task tree inspector when a structured widget is expanded", () => {
+  const html = renderWidgets({
+    widgets: [{
+      key: "subagent-async",
+      lines: [asyncSnapshotLine, "ignored second line keeps the compact widget initially expanded"],
+      placement: "aboveEditor",
+    }],
+  });
+
+  assert.match(html, /extension-widget-panels has-task-tree/);
+  assert.match(html, /task-tree-widget/);
+  assert.match(html, /review workflow/);
+  assert.match(html, /route-callers/);
+  assert.match(html, /bash/);
+  assert.match(html, /Current tool/);
+  assert.doesNotMatch(html, /PI_SUBAGENT_ASYNC_JSON/);
+});
