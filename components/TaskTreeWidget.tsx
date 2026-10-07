@@ -24,7 +24,7 @@ function stateGlyph(state: TaskTreeState): string {
 function collectDefaultExpanded(nodes: readonly TaskTreeNode[], target = new Set<string>()): Set<string> {
   for (const node of nodes) {
     if (node.children?.length && (node.state === "running" || node.state === "queued")) {
-      target.add(node.id);
+      target.add(node.key);
     }
     if (node.children?.length) collectDefaultExpanded(node.children, target);
   }
@@ -58,8 +58,8 @@ function NodeRow({
 }) {
   const { t } = useI18n();
   const hasChildren = Boolean(node.children?.length);
-  const expanded = hasChildren && expandedIds.has(node.id);
-  const selected = selectedId === node.id;
+  const expanded = hasChildren && expandedIds.has(node.key);
+  const selected = selectedId === node.key;
   const activity = node.activity?.currentTool ?? node.activity?.state;
 
   return (
@@ -75,14 +75,14 @@ function NodeRow({
           aria-label={expanded ? t("taskTree.collapse") : t("taskTree.expand")}
           aria-expanded={hasChildren ? expanded : undefined}
           disabled={!hasChildren}
-          onClick={() => hasChildren && onToggle(node.id)}
+          onClick={() => hasChildren && onToggle(node.key)}
         >
           {hasChildren ? (expanded ? "▾" : "▸") : ""}
         </button>
         <button
           type="button"
           className="task-tree-row-main"
-          onClick={() => onSelect(node.id)}
+          onClick={() => onSelect(node.key)}
           aria-pressed={selected}
         >
           <span className="task-tree-state-glyph" aria-hidden="true">{stateGlyph(node.state)}</span>
@@ -93,7 +93,7 @@ function NodeRow({
       </div>
       {expanded && node.children?.map((child) => (
         <NodeRow
-          key={child.id}
+          key={child.key}
           node={child}
           depth={depth + 1}
           selectedId={selectedId}
@@ -126,7 +126,7 @@ export function taskTreeSummaryParts(model: TaskTreeWidgetModel): Array<{ state:
 export function TaskTreeWidget({ model }: { model: TaskTreeWidgetModel }) {
   const { locale, t } = useI18n();
   const first = firstTaskTreeNode(model.nodes);
-  const [selectedId, setSelectedId] = useState<string | null>(() => first?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => first?.key ?? null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
     () => collectDefaultExpanded(model.nodes),
   );
@@ -180,7 +180,7 @@ export function TaskTreeWidget({ model }: { model: TaskTreeWidgetModel }) {
         <div className="task-tree-list" role="tree" aria-label={model.title}>
           {model.nodes.map((node) => (
             <NodeRow
-              key={node.id}
+              key={node.key}
               node={node}
               depth={0}
               selectedId={selectedId}
