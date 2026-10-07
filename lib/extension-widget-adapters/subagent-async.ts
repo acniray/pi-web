@@ -56,7 +56,12 @@ function parseActivity(value: unknown): TaskTreeActivity | undefined {
     : undefined;
 }
 
-function parseNode(value: unknown, depth = 0): TaskTreeNode | null {
+function parseNode(
+  value: unknown,
+  depth = 0,
+  parentKey = "root",
+  index = 0,
+): TaskTreeNode | null {
   if (depth > MAX_PARSE_DEPTH) return null;
   const source = record(value);
   if (!source) return null;
@@ -66,15 +71,17 @@ function parseNode(value: unknown, depth = 0): TaskTreeNode | null {
   const state = boundedString(source.state, 32) as TaskTreeState | undefined;
   if (!id || !label || !state || !VALID_STATES.has(state)) return null;
 
+  const key = `${parentKey}/${index}:${id}`;
   const children = Array.isArray(source.children)
     ? source.children
-        .map((child) => parseNode(child, depth + 1))
+        .map((child, childIndex) => parseNode(child, depth + 1, key, childIndex))
         .filter((child): child is TaskTreeNode => child !== null)
     : [];
 
   const type = boundedString(source.kind, 64);
   const activity = parseActivity(source.activity);
   return {
+    key,
     id,
     label,
     state,
@@ -103,7 +110,7 @@ function parseSnapshotLine(line: string): TaskTreeWidgetModel | null {
     if (!Array.isArray(source.runs)) return null;
 
     const nodes = source.runs
-      .map((run) => parseNode(run))
+      .map((run, index) => parseNode(run, 0, "root", index))
       .filter((node): node is TaskTreeNode => node !== null);
     const omitted = record(source.omitted);
     const omittedNodes = nonNegativeNumber(omitted?.runs);
