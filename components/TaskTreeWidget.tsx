@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import {
-  countTaskTreeStates,
+  countTaskTreeLeafStates,
   findTaskTreeNode,
   firstTaskTreeNode,
   type TaskTreeNode,
@@ -117,7 +117,7 @@ function DetailItem({ label, value }: { label: string; value: string | number | 
 }
 
 export function taskTreeSummaryParts(model: TaskTreeWidgetModel): Array<{ state: TaskTreeState; count: number }> {
-  const counts = countTaskTreeStates(model.nodes);
+  const counts = countTaskTreeLeafStates(model.nodes);
   return (["running", "queued", "failed", "partial", "paused", "stopped", "complete"] as const)
     .map((state) => ({ state, count: counts[state] }))
     .filter(({ count }) => count > 0);
