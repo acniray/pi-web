@@ -49,7 +49,7 @@ test("preserves title newlines like pi's TUI and keeps long titles from hiding t
 test("resets collapse state when a new extension request arrives", () => {
   assert.match(source, /<ExtensionDialog key=\{extensionDialog.id\}/);
   assert.match(source, /<ExtensionCustomPanel key=\{extensionCustomUi.id\}/);
-  assert.match(customSource, /if \(!collapsed\) inputRef.current\?\.focus\(\);\s*}, \[collapsed\]\)/);
+  // Terminal focus after expand is exercised by the browser regression test.
 });
 
 test("shows how many extension requests wait behind the one on screen", () => {
@@ -91,9 +91,5 @@ test("fits dialogs to their code blocks and lets the user maximize them (#947)",
   assert.doesNotMatch(source, /localStorage|pi-extension-/);
 });
 
-test("shows a custom panel's lines whole instead of scrolling when they are wider than 920px (#947)", () => {
-  // The extension wraps its lines to the width it asked for, so the panel only has to be
-  // as wide as the widest of them, capped to the content region.
-  assert.match(customSource, /width: "max-content",\s+minWidth: "min\(920px, 100%\)",\s+maxWidth: "100%"/);
-  assert.doesNotMatch(customSource.slice(0, customSource.indexOf("\n}\n")), /toggleFull|extensionMaximize/);
-});
+// Custom panel sizing is tested through actual xterm viewport negotiation in
+// e2e/extension-dialog.mjs, not through a particular CSS width spelling.

@@ -64,12 +64,14 @@ export function ExtensionStatusBar({
   widgets = [],
   onCommand,
   commandsDisabled = false,
+  onInput,
 }: {
   statuses: ExtensionStatusItem[];
   widgets?: ExtensionWidgetItem[];
   /** Sends the command of a `command:` status; without it those buttons stay disabled. */
   onCommand?: (command: string) => void;
   commandsDisabled?: boolean;
+  onInput?: (data: string) => Promise<void> | void;
 }) {
   const cells = buildExtensionStatusCells(statuses);
   if (cells.length === 0 && widgets.length === 0) return null;
@@ -112,7 +114,7 @@ export function ExtensionStatusBar({
     <div
       className={`extension-status-shelf${widgets.length > 0 ? " has-widgets" : ""}${cells.length > 0 ? " has-status" : ""}${hasCommands ? " has-commands" : ""}`}
     >
-      {widgets.length > 0 ? <ExtensionWidgets widgets={widgets}>{statusLine}</ExtensionWidgets> : statusLine}
+      {widgets.length > 0 ? <ExtensionWidgets widgets={widgets} onInput={onInput}>{statusLine}</ExtensionWidgets> : statusLine}
     </div>
   );
 }

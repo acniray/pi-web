@@ -17,9 +17,21 @@ export const extensionSource = `export default function (pi) {
       } else if (mode === "huge") {
         result = await ctx.ui.confirm("E2E huge", "\`\`\`sql\\n" + "SELECT " + "column_name, ".repeat(80) + "1;\\n\`\`\`");
       } else if (mode === "panel") {
+        let selected = 0;
+        let lastKey = "";
         result = await ctx.ui.custom((tui, theme, keybindings, done) => ({
-          render: (width) => ["E2E panel", "x".repeat(width)],
-          handleInput: (data) => { if (data === "\\x03") done("closed"); },
+          render: (width) => [
+            "E2E panel " + width + ":" + tui.terminal.columns + "x" + tui.terminal.rows,
+            "\\x1b[32m┌" + "─".repeat(Math.max(0, width - 2)) + "┐\\x1b[0m",
+            "│ 中文终端 — Selected " + selected,
+            "└" + "─".repeat(Math.max(0, width - 2)) + "┘",
+            "Last key: " + JSON.stringify(lastKey),
+          ],
+          handleInput: (data) => {
+            lastKey = data;
+            if (data === "\\x03" || data === "\\x1b") done("closed");
+            if (data === "\\x1b[B") selected += 1;
+          },
           invalidate() {},
         }), { overlay: true, overlayOptions: { width: 140 } });
       } else {
@@ -156,7 +168,8 @@ export async function checkExtensionDialogSizing(page, width) {
   const close = async (dialog, mode, result) => {
     await dialog.getByRole("button", { name: mode === "panel" ? "Close" : "Cancel", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
-    await page.getByText(`E2E ${mode} result: ${result}`, { exact: true }).waitFor();
+    // Repeated modes can leave more than one identical notification visible.
+    await page.getByText(`E2E ${mode} result: ${result}`, { exact: true }).last().waitFor();
     await page.getByRole("button", { name: "Stop agent", exact: true }).waitFor({ state: "hidden" });
   };
 
@@ -196,7 +209,36 @@ export async function checkExtensionDialogSizing(page, width) {
   assert.ok(panelWidth <= panelAvailable + 1, "The panel stays inside the content region");
   if (panelWidth < panelAvailable - 1) assert.equal(await scrollsSideways(panel), false, "A panel that is not capped shows its lines whole");
   assert.ok(panelWidth >= Math.min(920, panelAvailable) - 1, "The panel is never narrower than before");
-  await close(panel, "panel", "closed");
+  const screen = panel.locator(".terminal-xterm-host");
+  const waitForMatchingDimensions = () => page.waitForFunction(() => {
+    const host = document.querySelector('[role="dialog"] .terminal-xterm-host');
+    if (!host?.dataset.columns || !host.dataset.rows) return false;
+    return host.querySelector(".xterm-accessibility-tree")?.textContent.includes(
+      `E2E panel ${host.dataset.columns}:${host.dataset.columns}x${host.dataset.rows}`);
+  });
+  await waitForMatchingDimensions();
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => document.querySelector('[role="dialog"] .xterm-accessibility-tree')?.textContent.includes("Selected 1"));
+  await page.keyboard.press("Shift+Enter");
+  await page.waitForFunction(() => document.querySelector('[role="dialog"] .xterm-accessibility-tree')?.textContent.includes('Last key: "\\n"'), undefined, { timeout: 5000 });
+  await panel.getByRole("button", { name: "Collapse", exact: true }).click();
+  await page.getByRole("button", { name: /Awaiting response.*Extension panel/ }).click();
+  await waitForMatchingDimensions();
+  assert.ok(await page.locator(":focus").evaluate(element => Boolean(element.closest('[role="dialog"]'))), "Expanded terminal regains keyboard focus");
+  assert.ok((await screen.textContent()).includes("Selected 1"), "Collapse/expand keeps the component state");
+  const originalViewport = page.viewportSize();
+  const oldCols = Number(await screen.getAttribute("data-columns"));
+  await page.setViewportSize({ width: width > 600 ? 600 : 330, height: originalViewport.height });
+  await waitForMatchingDimensions();
+  await page.waitForFunction(oldCols => Number(document.querySelector('[role="dialog"] .terminal-xterm-host')?.dataset.columns) < oldCols, oldCols);
+  await waitForMatchingDimensions();
+  assert.equal(await screen.evaluate(element => element.scrollWidth > element.clientWidth + 1), false, "Fitted terminal never scrolls horizontally");
+  await page.setViewportSize(originalViewport);
+  await waitForMatchingDimensions();
+  await page.keyboard.press("Escape");
+  await panel.waitFor({ state: "hidden" });
+  await page.getByText("E2E panel result: closed", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Stop agent", exact: true }).waitFor({ state: "hidden" });
 
   console.log(`PASS: ${width}px extension dialogs fit their content (prose ${Math.round(proseWidth)}px, code ${Math.round(codeWidth)}px, panel ${Math.round(panelWidth)}px of ${Math.round(available)}px)`);
 }

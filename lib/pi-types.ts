@@ -100,7 +100,7 @@ export interface ExtensionUiContextLike {
   input(title: string, placeholder?: string, opts?: DialogOptionsLike): Promise<string | undefined>;
   editor(title: string, prefill?: string, opts?: DialogOptionsLike): Promise<string | undefined>;
   notify(message: string, type?: "info" | "warning" | "error"): void;
-  onTerminalInput(): () => void;
+  onTerminalInput(handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void;
   setStatus(key: string, text: string | undefined): void;
   setWorkingMessage(message?: string): void;
   setWorkingVisible(visible: boolean): void;

@@ -6,6 +6,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
+import { ensureExtensionHostEnvironment } from "./extension-host-environment";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { findDeferredModel, rememberProviderModels } from "./deferred-provider-models";
 import { isBlockingExtensionUiRequest } from "./extension-ui-queue";
@@ -28,7 +29,7 @@ import type {
   SessionInfo,
   SessionMessageEntry,
 } from "./types";
-import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS, type HeadlessCustomUiTui } from "./custom-ui-terminal";
+import { createHeadlessCustomUiTui, resizeHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS, type HeadlessCustomUiTui } from "./custom-ui-terminal";
 import {
   createSubagentExtension,
   preferPiWebSubagentExtension,
@@ -102,7 +103,7 @@ type ActiveExtensionWidget = {
 
 type ActiveCustomUi = {
   component: CustomUiComponent;
-  width: number;
+  tui: HeadlessCustomUiTui;
   resolve: (value: unknown) => void;
   settled: boolean;
 };
@@ -212,6 +213,7 @@ const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
   "get_commands",
   "extension_ui_response",
   "extension_ui_input",
+  "extension_ui_resize",
 ]);
 
 export interface RpcSessionStartOptions {
@@ -306,6 +308,15 @@ export class AgentSessionWrapper {
   private activeExtensionWidgets = new Map<string, ActiveExtensionWidget>();
   private extensionWidgetGenerations = new Map<string, number>();
   private extensionWidgetsResetting = false;
+  private terminalInputHandlers = new Set<(data: string) => { consume?: boolean; data?: string } | undefined>();
+  private extensionEditorText = "";
+  private readonly extensionEditor = {
+    render: () => [this.extensionEditorText],
+    invalidate: () => {},
+    handleInput: () => {},
+    getText: () => this.extensionEditorText,
+    setText: (text: string) => { this.extensionEditorText = text; },
+  };
   private pendingPromptCount = 0;
   private activeMutatingCommands = 0;
   private sessionReplacement: "fork" | "clone" | null = null;
@@ -1244,6 +1255,29 @@ export class AgentSessionWrapper {
         return null;
       }
 
+      case "extension_ui_resize": {
+        const custom = this.activeCustomUis.get(command.id as string);
+        if (custom) resizeHeadlessCustomUiTui(custom.tui, command.cols, command.rows);
+        return null;
+      }
+
+      case "extension_terminal_input": {
+        if (typeof command.data !== "string" || command.data.length > 4096) throw new Error("Invalid terminal input");
+        if (typeof command.editorText === "string") this.extensionEditorText = command.editorText.slice(0, 64 * 1024);
+        let data = command.data;
+        for (const handler of [...this.terminalInputHandlers]) {
+          try {
+            const result = handler(data);
+            if (result?.consume) return { consume: true };
+            if (typeof result?.data === "string") data = result.data;
+          } catch (error) {
+            this.emit({ type: "extension_error", extensionPath: "extension-terminal-input", event: "terminal_input",
+              error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return { consume: false, ...(data !== command.data ? { data } : {}) };
+      }
+
       case "set_auto_retry": {
         this.inner.setAutoRetryEnabled(command.enabled as boolean);
         return null;
@@ -1319,6 +1353,7 @@ export class AgentSessionWrapper {
     this.pendingUiRequests.clear();
     this.activeToolEvents.clear();
     this.clearExtensionWidgets(false);
+    this.terminalInputHandlers.clear();
 
     const finishDispose = () => {
       try {
@@ -1482,6 +1517,7 @@ export class AgentSessionWrapper {
 
   private resetExtensionWidgetsForReload(): void {
     this.extensionWidgetsResetting = true;
+    this.terminalInputHandlers.clear();
     try {
       const factoryKeys = [...this.activeExtensionWidgets.keys()];
       for (const key of factoryKeys) this.clearExtensionWidget(key);
@@ -1564,6 +1600,7 @@ export class AgentSessionWrapper {
       key: active.key,
       lines: widgetLines,
       placement: active.placement,
+      ...(this.terminalInputHandlers.size ? { interactive: true } : {}),
     });
     active.rendered = true;
     this.emit({
@@ -1573,6 +1610,7 @@ export class AgentSessionWrapper {
       widgetKey: active.key,
       widgetLines,
       widgetPlacement: active.placement,
+      ...(this.terminalInputHandlers.size ? { widgetInteractive: true } : {}),
     } as ExtensionUiRequest as AgentEvent);
   }
 
@@ -1587,7 +1625,7 @@ export class AgentSessionWrapper {
     const tui = createHeadlessCustomUiTui(() => {
       const active = this.activeExtensionWidgets.get(key);
       if (active?.generation === generation) this.renderExtensionWidget(active);
-    }, DEFAULT_CUSTOM_UI_COLUMNS);
+    }, DEFAULT_CUSTOM_UI_COLUMNS, undefined, this.extensionEditor);
 
     let component: unknown;
     try {
@@ -1641,7 +1679,7 @@ export class AgentSessionWrapper {
   private emitCustomUiRender(id: string, custom: ActiveCustomUi): void {
     let lines: string[];
     try {
-      lines = custom.component.render(custom.width);
+      lines = custom.component.render(custom.tui.terminal.columns);
     } catch (error) {
       lines = [`Extension custom UI render failed: ${error instanceof Error ? error.message : String(error)}`];
     }
@@ -1680,7 +1718,8 @@ export class AgentSessionWrapper {
     const custom = this.activeCustomUis.get(id);
     if (!custom || typeof data !== "string") return;
     try {
-      custom.component.handleInput?.(data);
+      const focused = custom.tui.getFocusedComponent() as CustomUiComponent | null;
+      focused?.handleInput?.(data);
       if (this.activeCustomUis.has(id)) this.emitCustomUiRender(id, custom);
     } catch (error) {
       this.closeCustomUi(id, undefined);
@@ -1708,9 +1747,12 @@ export class AgentSessionWrapper {
     return new Promise<T>((resolve, reject) => {
       let completed = false;
       const tui = createHeadlessCustomUiTui(
-        () => {
+        (force) => {
           const custom = this.activeCustomUis.get(id);
-          if (custom) this.emitCustomUiRender(id, custom);
+          if (custom) {
+            if (force) custom.component.invalidate?.();
+            this.emitCustomUiRender(id, custom);
+          }
         },
         width,
       );
@@ -1748,11 +1790,12 @@ export class AgentSessionWrapper {
           }
           const custom: ActiveCustomUi = {
             component: component as CustomUiComponent,
-            width,
+            tui,
             resolve: (value) => finish(value as T),
             settled: false,
           };
           this.activeCustomUis.set(id, custom);
+          tui.setFocus(custom.component);
           this.emitCustomUiRender(id, custom);
         })
         .catch((error) => {
@@ -1858,7 +1901,14 @@ export class AgentSessionWrapper {
           notifyType: type,
         } as ExtensionUiRequest as AgentEvent);
       },
-      onTerminalInput: () => () => {},
+      onTerminalInput: (handler) => {
+        this.terminalInputHandlers.add(handler);
+        for (const active of this.activeExtensionWidgets.values()) this.renderExtensionWidget(active);
+        return () => {
+          this.terminalInputHandlers.delete(handler);
+          for (const active of this.activeExtensionWidgets.values()) this.renderExtensionWidget(active);
+        };
+      },
       setStatus: (key, text) => {
         if (text === undefined) this.extensionStatuses.delete(key);
         else this.extensionStatuses.set(key, text);
@@ -1934,7 +1984,7 @@ export class AgentSessionWrapper {
           text,
         } as ExtensionUiRequest as AgentEvent);
       },
-      getEditorText: () => "",
+      getEditorText: () => this.extensionEditorText,
       addAutocompleteProvider: () => {},
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
@@ -2429,6 +2479,8 @@ export async function startRpcSession(
         ? undefined
         : projectTrustReloadOptions(sessionCwd, agentDir);
     const settingsManager = SettingsManager.create(sessionCwd, agentDir);
+    // Keep SDK-only session entry points covered before extensions capture their host.
+    if (!subagentResources && !chatOnly) ensureExtensionHostEnvironment();
     // Chat-only sessions and subagents that replace Pi's prompt send an exact
     // system prompt. The prompt is resolved at prompt time through this inline
     // extension: it may read the session's context files, which exist only

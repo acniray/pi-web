@@ -103,6 +103,7 @@ interface Props {
 }
 
 export interface ChatInputHandle {
+  getText: () => string;
   insertText: (text: string) => void;
   insertIfEmpty: (text: string) => void;
   replaceMessage: (message: UserMessage) => void;
@@ -724,6 +725,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   attachedImagesRef.current = attachedImages;
 
   useImperativeHandle(ref, () => ({
+    getText: () => valueRef.current,
     insertIfEmpty(text: string) {
       const ta = textareaRef.current;
       const current = ta ? ta.value : value;

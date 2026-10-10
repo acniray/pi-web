@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { AnsiText } from "@/components/AnsiText";
 import type { ExtensionWidgetItem } from "@/lib/types";
+import { toTerminalKeyData } from "@/lib/terminal-input";
+import { resolveExtensionWidgetPresentation } from "@/lib/extension-widget-adapters";
+import { TaskTreeWidget, taskTreeSummaryParts } from "./TaskTreeWidget";
 
 export const DEFAULT_EXPANDED_WIDGET_LINES = 3;
 export const WIDGET_UPDATE_IDLE_MS = 1100;
@@ -35,7 +38,7 @@ export function getUpdatedExtensionWidgetKeys(
 function getDefaultExpandedWidgetKey(widgets: ExtensionWidgetItem[]): string | null {
   return widgets.find((widget) => {
     const lineCount = widget.lines.length;
-    return lineCount > 1 && lineCount <= DEFAULT_EXPANDED_WIDGET_LINES;
+    return lineCount > 0 && lineCount <= DEFAULT_EXPANDED_WIDGET_LINES && (lineCount > 1 || widget.interactive);
   })?.key ?? null;
 }
 
@@ -50,7 +53,7 @@ export function getNextExpandedWidgetKey(
  * `children` (the status line) joins the triggers in one row, so the whole row
  * scrolls sideways together; the expanded panel stays above it, out of the scroll.
  */
-export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidgetItem[]; children?: ReactNode }) {
+export function ExtensionWidgets({ widgets, children, onInput }: { widgets: ExtensionWidgetItem[]; children?: ReactNode; onInput?: (data: string) => Promise<void> | void }) {
   const { t } = useI18n();
   const idPrefix = useId();
   const previousContentsRef = useRef<Map<string, string[]> | null>(null);
@@ -58,10 +61,20 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
   const [expandedWidgetKey, setExpandedWidgetKey] = useState<string | null>(
     () => getDefaultExpandedWidgetKey(widgets),
   );
+  const [inputError, setInputError] = useState<string | null>(null);
+  const inputPendingRef = useRef(false);
+  const sendInput = async (data: string) => {
+    if (!onInput || inputPendingRef.current) return;
+    inputPendingRef.current = true;
+    try { await onInput(data); setInputError(null); }
+    catch (error) { setInputError(error instanceof Error ? error.message : String(error)); }
+    finally { inputPendingRef.current = false; }
+  };
   const [updatingWidgetKeys, setUpdatingWidgetKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
 
+  const presentations = useMemo(() => new Map(widgets.map((widget) => [widget.key, resolveExtensionWidgetPresentation(widget)])), [widgets]);
   useEffect(() => {
     const nextContents = snapshotExtensionWidgetContents(widgets);
     const updatedKeys = getUpdatedExtensionWidgetKeys(
@@ -113,6 +126,7 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
     && widget.lines.length > 0
   ));
 
+  const expandedPresentation = expandedWidget ? presentations.get(expandedWidget.key) : undefined;
   const toggleWidget = (widget: ExtensionWidgetItem) => {
     setExpandedWidgetKey((current) => getNextExpandedWidgetKey(current, widget.key));
   };
@@ -120,7 +134,7 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
   return (
     <>
       {expandedWidget && (
-        <div className="extension-widget-panels">
+        <div className={`extension-widget-panels${expandedPresentation?.kind === "task-tree" ? " has-task-tree" : ""}`}>
           {(() => {
             const widget = expandedWidget;
             const index = widgets.indexOf(widget);
@@ -130,13 +144,32 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
               <section
                 key={widget.key}
                 id={panelId}
-                className="extension-widget-panel"
+                className={`extension-widget-panel${expandedPresentation?.kind === "task-tree" ? " is-task-tree" : ""}`}
                 aria-labelledby={triggerId}
+                tabIndex={widget.interactive ? 0 : undefined}
+                onKeyDown={widget.interactive && onInput ? (event) => {
+                  if (event.target !== event.currentTarget) return;
+                  const data = toTerminalKeyData(event) ?? (event.key.length === 1 && !event.metaKey && !event.ctrlKey ? event.key : null);
+                  if (!data) return;
+                  event.preventDefault(); event.stopPropagation();
+                  void sendInput(data);
+                } : undefined}
               >
-                <div className="extension-widget-panel-heading">{widget.key}</div>
-                <pre className="extension-widget-content">
-                  <AnsiText text={formatExtensionWidgetContent(widget.lines)} />
-                </pre>
+                {widget.interactive && onInput && (
+                  <div className="extension-widget-input-controls" role="group" aria-label={widget.key}>
+                    {([['ArrowDown', '↓'], ['ArrowUp', '↑'], ['ArrowLeft', '←'], ['ArrowRight', '→'], ['Enter', 'Enter'], ['Escape', 'Esc']] as const).map(([key, label]) => (
+                      <button key={key} type="button" data-terminal-key={key} aria-label={key}
+                        onClick={() => void sendInput(toTerminalKeyData({ key, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false })!)}>{label}</button>
+                    ))}
+                  </div>
+                )}
+                {inputError && <div role="alert">{inputError}</div>}
+                {expandedPresentation?.kind === "task-tree" ? <TaskTreeWidget model={expandedPresentation.model} /> : (
+                  <>
+                    <div className="extension-widget-panel-heading">{widget.key}</div>
+                    <pre className="extension-widget-content"><AnsiText text={formatExtensionWidgetContent(widget.lines)} /></pre>
+                  </>
+                )}
               </section>
             );
           })()}
@@ -145,6 +178,10 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
       <div className="extension-status-row">
         <div className="extension-widget-triggers" aria-label={t("chat.extensionWidgets")}>
           {widgets.map((widget, index) => {
+            const presentation = presentations.get(widget.key);
+            const structuredLabel = presentation?.kind === "task-tree" ? [presentation.model.title,
+              ...taskTreeSummaryParts(presentation.model).map(({ state, count }) => `${count} ${t(`taskTree.state.${state}`)}`),
+            ].join(" · ") : undefined;
             const expandable = widget.lines.length > 0;
             const expanded = expandable && widget.key === expandedWidget?.key;
             const updating = updatingWidgetKeys.has(widget.key);
@@ -178,7 +215,7 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
                     />
                   </svg>
                 </span>
-                <span className="extension-widget-key">{widget.key}</span>
+                <span className="extension-widget-key">{structuredLabel ?? widget.key}</span>
               </>
             );
 
@@ -187,11 +224,11 @@ export function ExtensionWidgets({ widgets, children }: { widgets: ExtensionWidg
                 key={widget.key}
                 id={triggerId}
                 type="button"
-                className={`extension-widget-trigger${expanded ? " is-expanded" : ""}${updating ? " is-updating" : ""}`}
+                className={`extension-widget-trigger${structuredLabel ? " is-structured" : ""}${expanded ? " is-expanded" : ""}${updating ? " is-updating" : ""}`}
                 aria-controls={panelId}
                 aria-expanded={expanded}
-                aria-label={`${placementLabel}: ${widget.key}, ${lineCountLabel}`}
-                title={`${widget.key} - ${placementLabel} - ${expanded ? t("i18n.collapse") : t("i18n.expand")}`}
+                aria-label={`${placementLabel}: ${structuredLabel ?? widget.key}, ${lineCountLabel}`}
+                title={`${structuredLabel ?? widget.key} - ${placementLabel} - ${expanded ? t("i18n.collapse") : t("i18n.expand")}`}
                 onClick={() => toggleWidget(widget)}
               >
                 {content}

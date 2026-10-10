@@ -437,6 +437,16 @@ html.dark .web-login-error {
   background-color: #111318;
 }
 
+.extension-custom-terminal {
+  flex: 1;
+  padding: 12px;
+  background: var(--bg-panel);
+}
+
+.extension-custom-terminal .xterm-viewport {
+  background-color: var(--bg-panel);
+}
+
 /*
  * Chromium-only scrollbars. Firefox renders its native ones, which the standard
  * `scrollbar-width` / `scrollbar-color` properties would only make thinner and
@@ -695,6 +705,339 @@ button.extension-widget-trigger:focus-visible {
   line-height: 1.45;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.extension-widget-panels.has-task-tree {
+  max-height: min(440px, 48dvh);
+  overflow: hidden;
+}
+
+.extension-widget-panel.is-task-tree {
+  height: min(420px, 46dvh);
+  min-height: 250px;
+}
+
+.extension-widget-trigger.is-structured {
+  flex-basis: min(330px, 48vw);
+  width: auto;
+  min-width: 220px;
+  max-width: 360px;
+}
+
+.extension-widget-structured-status {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.extension-widget-structured-status[data-state="running"] {
+  color: var(--accent);
+}
+
+.extension-widget-structured-status[data-state="queued"],
+.extension-widget-structured-status[data-state="partial"],
+.extension-widget-structured-status[data-state="paused"] {
+  color: #d97706;
+}
+
+.extension-widget-structured-status[data-state="failed"],
+.extension-widget-structured-status[data-state="rejected"],
+.extension-widget-structured-status[data-state="stopped"] {
+  color: #dc2626;
+}
+
+.extension-widget-structured-status[data-state="complete"] {
+  color: #16a34a;
+}
+
+.task-tree-widget {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.task-tree-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 38px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-panel) 94%, var(--accent) 6%);
+  font-size: 12px;
+}
+
+.task-tree-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tree-summary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.task-tree-summary [data-state="running"] { color: var(--accent); }
+.task-tree-summary [data-state="failed"],
+.task-tree-summary [data-state="rejected"] { color: #dc2626; }
+.task-tree-summary [data-state="queued"],
+.task-tree-summary [data-state="partial"],
+.task-tree-summary [data-state="paused"],
+.task-tree-summary [data-state="stopped"] { color: #d97706; }
+
+.task-tree-body {
+  display: grid;
+  grid-template-columns: minmax(260px, 42%) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.task-tree-list {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.task-tree-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  min-height: 31px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.task-tree-row:hover,
+.task-tree-row.is-selected {
+  background: var(--bg-hover);
+}
+
+.task-tree-row.is-selected {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.task-tree-disclosure,
+.task-tree-row-main {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.task-tree-disclosure {
+  display: grid;
+  width: 22px;
+  min-width: 22px;
+  padding: 0;
+  place-items: center;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.task-tree-disclosure:disabled {
+  cursor: default;
+}
+
+.task-tree-row-main {
+  display: grid;
+  grid-template-columns: 16px minmax(70px, 1fr) minmax(0, 0.7fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 9px 5px 2px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-tree-state-glyph {
+  display: inline-grid;
+  width: 14px;
+  place-items: center;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.task-tree-row[data-state="running"] .task-tree-state-glyph,
+.task-tree-detail-heading .task-tree-state-glyph[data-state="running"] {
+  color: var(--accent);
+  animation: task-tree-running-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.task-tree-row[data-state="complete"] .task-tree-state-glyph,
+.task-tree-detail-heading .task-tree-state-glyph[data-state="complete"] {
+  color: #16a34a;
+}
+
+.task-tree-row[data-state="failed"] .task-tree-state-glyph,
+.task-tree-row[data-state="rejected"] .task-tree-state-glyph,
+.task-tree-detail-heading .task-tree-state-glyph[data-state="failed"],
+.task-tree-detail-heading .task-tree-state-glyph[data-state="rejected"] {
+  color: #dc2626;
+}
+
+.task-tree-row[data-state="queued"] .task-tree-state-glyph,
+.task-tree-row[data-state="partial"] .task-tree-state-glyph,
+.task-tree-row[data-state="paused"] .task-tree-state-glyph,
+.task-tree-row[data-state="stopped"] .task-tree-state-glyph,
+.task-tree-detail-heading .task-tree-state-glyph[data-state="queued"],
+.task-tree-detail-heading .task-tree-state-glyph[data-state="partial"],
+.task-tree-detail-heading .task-tree-state-glyph[data-state="paused"],
+.task-tree-detail-heading .task-tree-state-glyph[data-state="stopped"] {
+  color: #d97706;
+}
+
+@keyframes task-tree-running-pulse {
+  from { opacity: 0.45; }
+  to { opacity: 1; }
+}
+
+.task-tree-row-label,
+.task-tree-row-activity {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tree-row-label {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.task-tree-row-activity,
+.task-tree-row-state {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.task-tree-row-state {
+  white-space: nowrap;
+}
+
+.task-tree-detail {
+  min-width: 0;
+  overflow: auto;
+  padding: 11px 14px 14px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.task-tree-detail-heading {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.task-tree-detail-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tree-detail-state {
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.task-tree-detail-state[data-state="running"] { color: var(--accent); }
+.task-tree-detail-state[data-state="complete"] { color: #16a34a; }
+.task-tree-detail-state[data-state="failed"],
+.task-tree-detail-state[data-state="rejected"] { color: #dc2626; }
+.task-tree-detail-state[data-state="queued"],
+.task-tree-detail-state[data-state="partial"],
+.task-tree-detail-state[data-state="paused"],
+.task-tree-detail-state[data-state="stopped"] { color: #d97706; }
+
+.task-tree-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 12px 0 0;
+}
+
+.task-tree-detail-item {
+  min-width: 0;
+}
+
+.task-tree-detail-item dt {
+  margin-bottom: 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.task-tree-detail-item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.task-tree-empty,
+.task-tree-omitted {
+  padding: 14px 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.task-tree-omitted {
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 720px) {
+  .extension-widget-trigger.is-structured {
+    min-width: min(260px, 78vw);
+    max-width: 78vw;
+  }
+
+  .extension-widget-panel.is-task-tree {
+    height: min(500px, 55dvh);
+  }
+
+  .task-tree-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(130px, 1fr) minmax(120px, 0.85fr);
+  }
+
+  .task-tree-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .task-tree-row-main {
+    grid-template-columns: 16px minmax(70px, 1fr) auto;
+  }
+
+  .task-tree-row-activity {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-tree-row[data-state="running"] .task-tree-state-glyph,
+  .task-tree-detail-heading .task-tree-state-glyph[data-state="running"] {
+    animation: none;
+  }
 }
 
 .extension-status-line {

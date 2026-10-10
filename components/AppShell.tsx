@@ -73,6 +73,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { FileViewerState } from "@/lib/file-viewer-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
+import { sessionDisplayName, sessionWorkspaceCwd } from "@/lib/session-display";
 import { getLastSettingsSection, settingsSectionRequiresProject, type SettingsSection } from "@/lib/settings-navigation";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
@@ -149,6 +150,7 @@ export function AppShell() {
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
+  const [childSessions, setChildSessions] = useState<SessionInfo[]>([]);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
     setSessionCatalog(sessions);
     // The sidebar hydrates metadata after the selected session has already
@@ -160,13 +162,41 @@ export function AppShell() {
       return refreshed ? mergeCatalogRow(current, refreshed) : current;
     });
   }, []);
+  const childRootId = selectedSession?.relation?.kind === "subagent"
+    ? selectedSession.relation.parentSessionId : selectedSession?.id;
+  useEffect(() => {
+    setChildSessions([]);
+    if (!childRootId) return;
+    const controller = new AbortController();
+    let pending = false;
+    const refresh = async () => {
+      if (pending || controller.signal.aborted) return;
+      pending = true;
+      try {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(childRootId)}/children`, {
+          cache: "no-store", signal: controller.signal,
+        });
+        if (!response.ok) return;
+        const data = await response.json() as { sessions?: SessionInfo[] };
+        if (controller.signal.aborted || !Array.isArray(data.sessions)) return;
+        setChildSessions(data.sessions);
+        setSelectedSession((current) => {
+          const child = current && data.sessions!.find((row) => row.id === current.id);
+          return child && current ? mergeCatalogRow(current, child) : current;
+        });
+      } catch { /* A child refresh must not interrupt browsing the parent. */ }
+      finally { pending = false; }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5000);
+    return () => { controller.abort(); window.clearInterval(interval); };
+  }, [childRootId]);
   const sessionsWithSelection = useMemo(() => {
-    if (!selectedSession) return sessionCatalog;
-    return [
-      ...sessionCatalog.filter((session) => session.id !== selectedSession.id),
-      selectedSession,
-    ];
-  }, [selectedSession, sessionCatalog]);
+    const byId = new Map(sessionCatalog.map((session) => [session.id, session]));
+    for (const child of childSessions) byId.set(child.id, child);
+    if (selectedSession) byId.set(selectedSession.id, selectedSession);
+    return [...byId.values()];
+  }, [selectedSession, sessionCatalog, childSessions]);
   const activeSessionFamily = useMemo(
     () => getSessionFamily(sessionsWithSelection, selectedSession?.id),
     [selectedSession?.id, sessionsWithSelection],
@@ -1400,7 +1430,7 @@ export function AppShell() {
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
-        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
+        selectedCwd={selectedSession ? sessionWorkspaceCwd(selectedSession, activeSessionFamily?.root) : newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
         onOpenTerminal={handleOpenTerminal}
@@ -2327,13 +2357,13 @@ export function AppShell() {
                     const totalActiveMs = sessionStats.totalActiveMs ?? 0;
                     const ws = selectedSession;
                     const sessionRows = [
-                       ...(sessionStats.sessionName ? [{ label: translate("session.name"), value: sessionStats.sessionName, copyField: null }] : []),
+                       ...((selectedSession?.displayName || selectedSession?.relation?.kind === "subagent" || sessionStats.sessionName) ? [{ label: translate("session.name"), value: selectedSession?.relation?.kind === "subagent" ? sessionDisplayName(selectedSession) : (selectedSession?.displayName ?? sessionStats.sessionName!), copyField: null }] : []),
                        { label: translate("session.file"), value: sessionStats.sessionFile ?? translate("session.inMemory"), copyField: "file" as const },
                        { label: translate("session.id"), value: sessionStats.sessionId, copyField: "id" as const },
                        ...(totalActiveMs > 0 ? [{ label: translate("session.totalActive"), value: formatDuration(totalActiveMs), copyField: null }] : []),
                     ];
                     const projectRows = [
-                      ...(ws ? [{ label: translate("session.projectDir"), value: ws.projectRoot ?? ws.cwd, copyField: "projectDir" as const }] : []),
+                      ...(ws ? [{ label: translate("session.projectDir"), value: selectedSession?.projectRoot ?? ws.projectRoot ?? ws.cwd, copyField: "projectDir" as const }] : []),
                       ...(ws?.branch ? [{ label: translate("session.gitBranch"), value: ws.branch, copyField: "gitBranch" as const }] : []),
                       ...(ws?.isWorktree ? [{ label: translate("session.gitWorktree"), value: ws.cwd, copyField: "gitWorktree" as const }] : []),
                     ];
