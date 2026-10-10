@@ -303,6 +303,7 @@ function readCompactResult(result: unknown, reason: string): CompactResultInfo |
 }
 
 export interface ChatInputHandle {
+  getText?: () => string;
   insertText: (text: string) => void;
   insertIfEmpty: (content: string) => void;
   replaceMessage: (message: UserMessage) => void;
@@ -1126,6 +1127,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, []);
 
+  const extensionCustomResizeChainRef = useRef<Promise<void>>(Promise.resolve());
+  const sendExtensionCustomResize = useCallback((request: ExtensionUiCustomRequest, cols: number, rows: number) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return Promise.resolve();
+    const sending = extensionCustomResizeChainRef.current.then(async () => {
+      try {
+        await sendAgentCommand(sid, { type: "extension_ui_resize", id: request.id, cols, rows });
+      } catch (e) {
+        console.error("Failed to resize extension custom UI:", e);
+      }
+    });
+    extensionCustomResizeChainRef.current = sending;
+    return sending;
+  }, []);
+
+  const sendExtensionTerminalInput = useCallback(async (data: string) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    await sendAgentCommand(sid, { type: "extension_terminal_input", data, editorText: opts.chatInputRef?.current?.getText?.() ?? "" });
+  }, [opts.chatInputRef]);
+
   const addNotice = useCallback((notice: { id?: string; message: string; type?: NoticeType }) => {
     const message = notice.message.trim();
     if (!message) return;
@@ -1171,6 +1193,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           request.widgetKey,
           request.widgetLines,
           request.widgetPlacement,
+          request.widgetInteractive,
         ));
         break;
       case "setTitle":
@@ -2756,7 +2779,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats, autoCompactionEnabled,
     slashCommands, slashCommandsLoading, queuedMessages,
-    notices: noticeState.visible, extensionDialog, waitingExtensionDialogCount, extensionCustomUi, waitingExtensionCustomUiCount, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
+    notices: noticeState.visible, extensionDialog, waitingExtensionDialogCount, extensionCustomUi, waitingExtensionCustomUiCount, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, sendExtensionCustomResize, sendExtensionTerminalInput,
     isAutoModelSelection: isNew && newSessionModel === null,
     isAutoThinkingSelection: isNew && newSessionThinkingLevel === null,
     defaultModel: newSessionDefaultModel,

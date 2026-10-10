@@ -31,7 +31,7 @@ import {
 } from "@/lib/session-tree";
 import type { SessionInfo } from "@/lib/types";
 import { formatRelativeTime, formatShortRelativeTime } from "@/lib/i18n/format";
-import { skillExpansionToCommand } from "@/lib/slash-display";
+import { sessionDisplayName } from "@/lib/session-display";
 import { useGroupDrag, type GroupDragHandlers } from "@/hooks/useGroupDrag";
 import { useI18n } from "@/hooks/useI18n";
 import { useScrollbarVisibility } from "@/hooks/useScrollbarVisibility";
@@ -147,8 +147,7 @@ const DELETE_TITLE_MAX = 22;
  * user typed, as MessageView shows it), else its id.
  */
 export function sessionRowTitle(session: SessionInfo): string {
-  const displayFirstMessage = skillExpansionToCommand(session.firstMessage) ?? session.firstMessage;
-  return session.name || displayFirstMessage.slice(0, 50) || session.id.slice(0, 12);
+  return sessionDisplayName(session);
 }
 
 function isImeKey(event: ReactKeyboardEvent): boolean {

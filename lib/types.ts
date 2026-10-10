@@ -194,6 +194,7 @@ export type ExtensionUiRequest =
       widgetKey: string;
       widgetLines?: string[];
       widgetPlacement?: "aboveEditor" | "belowEditor";
+      widgetInteractive?: boolean;
     }
   | {
       type: "extension_ui_request";
@@ -234,6 +235,8 @@ export interface ExtensionWidgetItem {
   key: string;
   lines: string[];
   placement: "aboveEditor" | "belowEditor";
+  /** Web transport metadata, derived from registered terminal input handlers. */
+  interactive?: boolean;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
@@ -344,7 +347,8 @@ export type SubagentSessionStatus =
   | "completed"
   | "failed"
   | "aborted"
-  | "interrupted";
+  | "interrupted"
+  | "unknown";
 
 export interface SessionTreeNode {
   entry: SessionEntry;
@@ -359,6 +363,8 @@ export interface SessionInfo {
   id: string;
   cwd: string;
   name?: string;
+  /** Display label from explicit child-session metadata; never changes the persisted name. */
+  displayName?: string;
   created: string;
   modified: string;
   messageCount: number;

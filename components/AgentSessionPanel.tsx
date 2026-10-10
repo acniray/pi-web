@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
+import { sessionDisplayName, sessionIsRunning } from "@/lib/session-display";
 
 interface Props {
   rootSession: SessionInfo;
@@ -13,7 +14,7 @@ interface Props {
 }
 
 function sessionTitle(session: SessionInfo): string {
-  return session.name || session.firstMessage || session.id.slice(0, 12);
+  return sessionDisplayName(session);
 }
 
 function formatRelativeTime(value: string, locale: string): string {
@@ -53,7 +54,7 @@ export function StatusIcon({ status }: { status: SubagentSessionStatus }) {
       </svg>
     );
   }
-  if (status === "aborted" || status === "interrupted") {
+  if (status === "aborted" || status === "interrupted" || status === "unknown") {
     return (
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
         <circle cx="12" cy="12" r="9" /><path d="M9 9h6v6H9z" />
@@ -83,7 +84,7 @@ function AgentRow({
   const { locale, t } = useI18n();
   const relation = session.relation?.kind === "subagent" ? session.relation : null;
   const status: SubagentSessionStatus = running ? "running" : relation?.status ?? "completed";
-  const primary = main ? t("agentSwitcher.main") : relation?.description || sessionTitle(session);
+  const primary = main ? t("agentSwitcher.main") : sessionTitle(session);
   const secondary = main
     ? sessionTitle(session)
     : `${relation?.profile ?? t("agentSwitcher.subagent")} · ${formatRelativeTime(session.modified, locale)}`;
@@ -154,8 +155,8 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const sortedSubagents = useMemo(() => [...subagents].sort((a, b) => {
-    const aRunning = runningSessionIds.has(a.id);
-    const bRunning = runningSessionIds.has(b.id);
+    const aRunning = sessionIsRunning(a, runningSessionIds);
+    const bRunning = sessionIsRunning(b, runningSessionIds);
     if (aRunning !== bRunning) return aRunning ? -1 : 1;
     return b.modified.localeCompare(a.modified);
   }), [runningSessionIds, subagents]);
@@ -167,7 +168,7 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
           .some((value) => value?.toLowerCase().includes(normalizedQuery));
       })
     : sortedSubagents;
-  const runningCount = subagents.filter((session) => runningSessionIds.has(session.id)).length;
+  const runningCount = subagents.filter((session) => sessionIsRunning(session, runningSessionIds)).length;
 
   return (
     <div
@@ -224,7 +225,7 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
               key={session.id}
               session={session}
               selected={session.id === selectedSessionId}
-              running={runningSessionIds.has(session.id)}
+              running={sessionIsRunning(session, runningSessionIds)}
               onSelect={() => onSelectSession(session)}
             />
           ))}

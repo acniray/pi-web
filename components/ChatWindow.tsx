@@ -4,10 +4,9 @@ import Image from "next/image";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage } from "@/lib/types";
-import { normalizeCustomPanelLines } from "@/lib/ansi";
+import { normalizeCustomPanelLines, stripAnsi } from "@/lib/ansi";
 import { splitNoticeText } from "@/lib/notice-text";
 import { EXTENSION_DIALOG_BASE_WIDTH, fitExtensionDialogWidth } from "@/lib/extension-dialog-fit";
-import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { collapsesProcessDetails, countToolCallBlocks, getDisplayableAssistantBlocks, hasAssistantAnswer, isHiddenCustomMessage, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { getFinalAnswerViews, keepWrittenFiles, type FinalAnswerViews } from "@/lib/turn-views";
@@ -18,7 +17,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
-import { AnsiText } from "./AnsiText";
+import { CustomUiTerminal } from "./CustomUiTerminal";
 import { useI18n } from "@/hooks/useI18n";
 import { phaseLabel } from "@/lib/chat-phase-label";
 import { useAgentSession, type AgentEndInfo, type NewSessionChoices, type NoticeItem } from "@/hooks/useAgentSession";
@@ -283,7 +282,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
-    notices, extensionDialog, waitingExtensionDialogCount, extensionCustomUi, waitingExtensionCustomUiCount, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, setNoticePaused, addNotice,
+    notices, extensionDialog, waitingExtensionDialogCount, extensionCustomUi, waitingExtensionCustomUiCount, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, sendExtensionCustomResize, sendExtensionTerminalInput, setNoticePaused, addNotice,
     isAutoModelSelection,
     isAutoThinkingSelection,
     defaultModel,
@@ -1066,7 +1065,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
           <ExtensionDialog key={extensionDialog.id} request={extensionDialog} waitingCount={waitingExtensionDialogCount} onRespond={respondToExtensionUi} />
         )}
         {extensionCustomUi && (
-          <ExtensionCustomPanel key={extensionCustomUi.id} request={extensionCustomUi} waitingCount={waitingExtensionCustomUiCount} onInput={sendExtensionCustomInput} />
+          <ExtensionCustomPanel key={extensionCustomUi.id} request={extensionCustomUi} waitingCount={waitingExtensionCustomUiCount} onInput={sendExtensionCustomInput} onResize={sendExtensionCustomResize} />
         )}
         {!isEmptyNew && <>
         <div
@@ -1464,6 +1463,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         <ExtensionStatusBar
           statuses={extensionStatuses}
           widgets={extensionWidgets}
+          onInput={sendExtensionTerminalInput}
           onCommand={handleSend}
           commandsDisabled={sessionBusy}
         />
@@ -2014,22 +2014,17 @@ function ExtensionCustomPanel({
   request,
   waitingCount,
   onInput,
+  onResize,
 }: {
   request: ExtensionCustomRequest;
   /** Further custom panels queued behind this one; each opens after this one closes. */
   waitingCount: number;
   onInput: (request: ExtensionCustomRequest, data: string) => void;
+  onResize: (request: ExtensionCustomRequest, cols: number, rows: number) => Promise<void>;
 }) {
   const { t } = useI18n();
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const composingRef = useRef(false);
   const [collapsed, setCollapsed] = useState(false);
-  const displayLines = normalizeCustomPanelLines(request.lines);
-  const summary = displayLines.find((line) => line.trim())?.trim();
-
-  useEffect(() => {
-    if (!collapsed) inputRef.current?.focus();
-  }, [collapsed]);
+  const summary = normalizeCustomPanelLines(request.lines).map(stripAnsi).find((line) => line.trim())?.trim();
 
   return (
     <div
@@ -2085,15 +2080,12 @@ function ExtensionCustomPanel({
       ) : (
       <div
         role="dialog"
-        onClick={(event) => {
-          if (!(event.target as HTMLElement).closest("button")) inputRef.current?.focus();
-        }}
+        aria-label={t("chat.extensionPanel")}
         style={{
           pointerEvents: "auto",
           position: "relative",
-          // The extension already wrapped its lines to the width it asked for; show them
-          // whole when that is wider than the usual 920px instead of scrolling sideways.
-          width: "max-content",
+          width: "min(1200px, 100%)",
+          height: "min(760px, 100%)",
           minWidth: "min(920px, 100%)",
           maxWidth: "100%",
           maxHeight: "min(760px, 100%)",
@@ -2107,54 +2099,6 @@ function ExtensionCustomPanel({
           outline: "none",
         }}
       >
-        <textarea
-          ref={inputRef}
-           aria-label={t("chat.extensionInput")}
-          autoCapitalize="off"
-          autoComplete="off"
-          autoCorrect="off"
-          spellCheck={false}
-          onKeyDown={(event) => {
-            if (composingRef.current || event.nativeEvent.isComposing) return;
-            const data = toTerminalKeyData(event);
-            if (!data) return;
-            event.preventDefault();
-            event.stopPropagation();
-            onInput(request, data);
-          }}
-          onInput={(event) => {
-            if (composingRef.current || event.nativeEvent.isComposing) return;
-            const text = event.currentTarget.value;
-            event.currentTarget.value = "";
-            if (text) onInput(request, text);
-          }}
-          onCompositionStart={() => {
-            composingRef.current = true;
-          }}
-          onCompositionEnd={(event) => {
-            composingRef.current = false;
-            const input = event.currentTarget;
-            queueMicrotask(() => {
-              const text = input.value;
-              input.value = "";
-              if (text) onInput(request, text);
-            });
-          }}
-          onPaste={(event) => {
-            event.preventDefault();
-            const text = event.clipboardData.getData("text");
-            if (text) onInput(request, asBracketedPaste(text));
-          }}
-          style={{
-            position: "absolute",
-            width: 1,
-            height: 1,
-            padding: 0,
-            border: 0,
-            opacity: 0,
-            pointerEvents: "none",
-          }}
-        />
         <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
            <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 650 }}>{t("chat.extensionPanel")}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2198,22 +2142,12 @@ function ExtensionCustomPanel({
             </button>
           </div>
         </div>
-        <pre
-          style={{
-            margin: 0,
-            padding: 14,
-            minHeight: 0,
-            overflow: "auto",
-            background: "var(--bg-panel)",
-            color: "var(--text)",
-            fontFamily: "var(--font-mono)",
-            fontSize: 13,
-            lineHeight: 1.45,
-            whiteSpace: "pre",
-          }}
-        >
-          <AnsiText text={displayLines.join("\n")} />
-        </pre>
+        <CustomUiTerminal
+          lines={request.lines}
+          label={t("chat.extensionInput")}
+          onInput={(data) => onInput(request, data)}
+          onResize={(cols, rows) => onResize(request, cols, rows)}
+        />
       </div>
       )}
     </div>

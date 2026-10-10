@@ -5,10 +5,11 @@ export function updateExtensionWidgets(
   key: string,
   lines: string[] | undefined,
   placement: ExtensionWidgetItem["placement"] = "aboveEditor",
+  interactive?: boolean,
 ): ExtensionWidgetItem[] {
   if (lines === undefined) return widgets.filter((widget) => widget.key !== key);
 
-  const updatedWidget = { key, lines, placement };
+  const updatedWidget = { key, lines, placement, ...(interactive ? { interactive } : {}) };
   const existingIndex = widgets.findIndex((widget) => widget.key === key);
   if (existingIndex === -1) return [...widgets, updatedWidget];
 

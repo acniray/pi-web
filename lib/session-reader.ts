@@ -14,6 +14,7 @@ import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-res
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { checkSessionMembership, listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
+import { identifyContainedSession } from "./session-children";
 
 export { getAgentDir };
 
@@ -153,17 +154,29 @@ function readSessionRelationEntries(filePath: string): SessionEntry[] {
 }
 
 export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise<SessionInfo[]> {
-  const uniqueCwds = [...new Set(sessions.map((s) => s.cwd).filter(Boolean))];
+  // Browsing an extension-owned child opens a runtime wrapper. Preserve its
+  // ownership on the runtime catalogue too, not only on the parent's panel.
+  const owners = new Map(sessions.map((session) => [session.id,
+    session.relation || !session.path ? null : identifyContainedSession(session.path),
+  ]));
+  const uniqueCwds = [...new Set(sessions.map((s) => owners.get(s.id)?.cwd ?? s.cwd).filter(Boolean))];
   const projectByCwd = new Map<string, ProjectInfo>();
   await Promise.all(uniqueCwds.map(async (cwd) => {
     projectByCwd.set(cwd, await resolveProject(cwd));
   }));
 
   return sessions.map((session) => {
-    const project = session.cwd ? projectByCwd.get(session.cwd) : undefined;
-    const projectRoot = project?.projectRoot ?? session.cwd;
+    const owner = owners.get(session.id);
+    const projectCwd = owner?.cwd ?? session.cwd;
+    const project = projectCwd ? projectByCwd.get(projectCwd) : undefined;
+    const projectRoot = project?.projectRoot ?? projectCwd;
     return {
       ...session,
+      ...(owner ? {
+        parentSessionId: owner.id,
+        relation: { kind: "subagent" as const, parentSessionId: owner.id,
+          profile: "subagent", description: session.name ?? "subagent", status: "unknown" as const },
+      } : {}),
       projectRoot,
       projectKey: projectIdentityKey(projectRoot),
       ...(project?.branch ? { branch: project.branch } : {}),
