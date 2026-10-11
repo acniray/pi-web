@@ -1,10 +1,12 @@
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { lstatSync, realpathSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readRegularFileText } from './regular-file';
-import { readSessionHeader, readSessionInfo, readSessionInfoUnprojected, cacheSessionPath, openSessionManager } from './session-reader';
+import { readSessionHeader, readSessionInfoUnprojected, cacheSessionPath, openSessionManager } from './session-reader';
+import { identifyContainedSession, isRegularStoredSessionFile, resolveSessionOwnership } from './session-relationship';
+export { identifyContainedSession } from './session-relationship';
 import { projectIdentityKey } from './project-identity';
 import type { SessionInfo, SubagentSessionStatus } from './types';
 
@@ -62,7 +64,6 @@ function contained(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
-function storageRoot(): string { return resolve(getAgentDir(), 'sessions'); }
 
 /** Small compatibility boundary for tools publishing asyncDir/status.json.
  * No package locations, tool names or UUID layouts are assumed. The document
@@ -95,30 +96,8 @@ function referencedStatusMetadata(details: unknown, parentId: string, parentPath
   }
   return refs;
 }
-function regularStoredFile(path: string): boolean {
-  try {
-    const root = realpathSync(storageRoot());
-    return contained(root, realpathSync(path)) && lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink();
-  } catch { return false; }
-}
-/** Compatibility for session-owned containers: a containing directory has a sibling JSONL owner. */
-export function identifyContainedSession(filePath: string): { id: string; path: string; cwd: string } | null {
-  const root = storageRoot();
-  const path = resolve(filePath);
-  if (!contained(root, path) || !regularStoredFile(path)) return null;
-  let dir = dirname(path);
-  for (let depth = 0; depth < MAX_DEPTH && contained(root, dir); depth++, dir = dirname(dir)) {
-    const owner = `${dir}.jsonl`;
-    if (!regularStoredFile(owner)) continue;
-    try {
-      const header = readSessionHeader(owner);
-      if (header?.id && header.cwd) return { id: header.id, path: owner, cwd: header.cwd };
-    } catch { /* malformed or removed owner */ }
-  }
-  return null;
-}
 export async function listSessionChildren(parentId: string, parentPath: string): Promise<SessionInfo[]> {
-  if (!regularStoredFile(parentPath) || readSessionHeader(parentPath)?.id !== parentId) return [];
+  if (!isRegularStoredSessionFile(parentPath) || readSessionHeader(parentPath)?.id !== parentId) return [];
   const references = new Map<string, SessionReference>();
   const currentReferences = new Map<string, SessionReference>();
   for (const entry of openSessionManager(parentPath).getBranch()) {
@@ -145,27 +124,25 @@ export async function listSessionChildren(parentId: string, parentPath: string):
       else if (entry.isDirectory() && dir.depth < MAX_DEPTH) queue.push({ path, depth: dir.depth + 1 });
     }
   }
-  // Explicit references also support plugins storing child sessions outside a session-owned container.
-  for (const path of references.keys()) if (paths.size < MAX_CHILDREN && path !== parentPath && regularStoredFile(path)) paths.add(path);
+  // Tool-result paths supply labels/status, not ownership. An explicit path is
+  // eligible only when the same on-disk parent relationship independently holds.
+  for (const path of references.keys()) {
+    if (paths.size >= MAX_CHILDREN) break;
+    if (identifyContainedSession(path)?.id === parentId) paths.add(path);
+  }
   const sessions: SessionInfo[] = [];
   // The children list never runs project resolution; the parent's own workspace
   // is the workspace its children work in (AppShell resolves it through
   // sessionWorkspaceCwd and the detail row falls back to projectRoot).
   const parentCwd = readSessionHeader(parentPath)?.cwd;
   for (const path of paths) {
-    if (!regularStoredFile(path)) continue;
-    // Container ownership is decisive: a file under the parent's own directory
-    // can never be a fork row, even though extension-owned children also carry
-    // `parentSession` headers (read as forks by the native relation pass).
-    // Referenced paths outside any container keep the fork-row exclusion: a
-    // fork's absolute path quoted in a tool result must not become a child.
-    const ref = references.get(resolve(path));
-    const owner = identifyContainedSession(path);
-    if (!ref && owner?.id !== parentId) continue;
+    if (!isRegularStoredSessionFile(path)) continue;
     const info = await readSessionInfoUnprojected(path);
     if (!info || info.id === parentId) continue;
-    if (info.relation?.kind === 'fork' && owner?.id !== parentId) continue;
-    const contained = info.relation?.kind === 'subagent' ? info.relation : undefined;
+    const relation = resolveSessionOwnership(info);
+    if (relation.owner?.id !== parentId) continue;
+    const ref = references.get(resolve(path));
+    const contained = relation.relation?.kind === 'subagent' ? relation.relation : undefined;
     const title = ref?.label ?? ref?.sessionName ?? info.displayName ?? ref?.agent;
     cacheSessionPath(info.id, path);
     sessions.push({ ...info, ...(title ? { displayName: title } : {}), parentSessionId: parentId,

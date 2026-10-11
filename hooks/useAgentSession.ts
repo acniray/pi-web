@@ -19,6 +19,7 @@ import {
   deleteSessionViewSnapshot,
   getSessionViewSnapshot,
   setSessionViewSnapshot,
+  snapshotCoversLoadedEntries,
 } from "@/lib/session-view-cache";
 import { clearDraft, getDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
@@ -46,8 +47,7 @@ import {
   shouldShowScrollToLatest,
 } from "@/lib/chat-lazy-load";
 import {
-  INITIAL_STREAMING_STATE,
-  streamReducer,
+  createStreamingStore,
   type ClientAssistantMessageEvent,
 } from "@/lib/streaming-message";
 
@@ -358,7 +358,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [hasEarlierMessages, setHasEarlierMessages] = useState(false);
   const [earlierTurnCount, setEarlierTurnCount] = useState(0);
-  const [streamState, dispatch] = useReducer(streamReducer, INITIAL_STREAMING_STATE);
+  // Outside React state: a streamed chunk must not re-render the whole chat (see StreamingStore).
+  const [streamingStore] = useState(createStreamingStore);
+  const dispatch = streamingStore.dispatch;
   const [agentRunning, setAgentRunning] = useState(false);
   const [bashRunning, setBashRunning] = useState(false);
   const [pendingBash, setPendingBash] = useState<{ command: string; excludeFromContext: boolean } | null>(null);
@@ -1219,7 +1221,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setActiveToolResults(new Map());
     dispatch({ type: "end" });
     return wasRunning;
-  }, []);
+  }, [dispatch]);
 
   const notifyPromptStage = useCallback((runId: number, aborted = false) => {
     if (notifiedPromptRunIdRef.current === runId) return false;
@@ -1729,7 +1731,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setExtensionDialogs((queue) => removeExtensionUiRequest(queue, event.id as string));
         break;
     }
-  }, [addNotice, applyContextUsage, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, onToolEnd, refreshContextUsage, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel]);
+  }, [addNotice, applyContextUsage, cancelEventStreamGrace, dispatch, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, onToolEnd, refreshContextUsage, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
@@ -1867,7 +1869,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission, editEntryId, setEdit]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, dispatch, reconcileAgentState, restoreSubmission, editEntryId, setEdit]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -2614,7 +2616,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (sid && currentData && currentData.sessionId === sid && currentData.snapshotRevision) {
         const existing = getSessionViewSnapshot(sid);
         const entryIds = entryIdsRef.current;
-        const coverable = !existing || entryIds.every((id) => existing.entryIds.includes(id) || (existing.loadedEntryIds ?? []).includes(id));
+        const coverable = !existing || snapshotCoversLoadedEntries(existing, entryIds);
         if (coverable) {
           setSessionViewSnapshot({
             sessionId: sid,
@@ -2774,7 +2776,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   return {
     // State
-    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, earlierTurnCount, streamState,
+    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, earlierTurnCount, streamingStore,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats, autoCompactionEnabled,
