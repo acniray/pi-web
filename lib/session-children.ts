@@ -140,14 +140,26 @@ export async function listSessionChildren(parentId: string, parentPath: string):
     const info = await readSessionInfoUnprojected(path);
     if (!info || info.id === parentId) continue;
     const relation = resolveSessionOwnership(info);
-    if (relation.owner?.id !== parentId) continue;
+    const directOwner = relation.owner;
+    if (!directOwner) continue;
+    // Keep the direct parent edge for nested children while including every
+    // verified descendant in the selected root family's response.
+    let ancestor: typeof directOwner | null = directOwner;
+    let belongsToFamily = false;
+    const seen = new Set<string>();
+    for (let depth = 0; ancestor && depth < MAX_DEPTH && !seen.has(ancestor.path); depth++) {
+      seen.add(ancestor.path);
+      if (ancestor.id === parentId) { belongsToFamily = true; break; }
+      ancestor = identifyContainedSession(ancestor.path);
+    }
+    if (!belongsToFamily) continue;
     const ref = references.get(resolve(path));
     const contained = relation.relation?.kind === 'subagent' ? relation.relation : undefined;
     const title = ref?.label ?? ref?.sessionName ?? info.displayName ?? ref?.agent;
     cacheSessionPath(info.id, path);
-    sessions.push({ ...info, ...(title ? { displayName: title } : {}), parentSessionId: parentId,
+    sessions.push({ ...info, ...(title ? { displayName: title } : {}), parentSessionId: directOwner.id,
       ...(parentCwd ? { projectRoot: parentCwd, projectKey: projectIdentityKey(parentCwd) } : {}),
-      relation: { kind: 'subagent', parentSessionId: parentId,
+      relation: { kind: 'subagent', parentSessionId: directOwner.id,
         profile: ref?.agent ?? (contained ? contained.profile : 'subagent'),
         description: title ?? 'subagent',
         status: ref?.status ?? (contained ? contained.status : 'unknown') },
