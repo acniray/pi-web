@@ -195,16 +195,21 @@ export function AppShell() {
   }, [selectedSession, sessionCatalog, childSessions]);
   // Children change when the family changes, when the server reports a new
   // catalogue, or while one of its members runs. An idle family is never polled.
-  const familyMemberIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (childRootId) ids.add(childRootId);
-    if (selectedSession) ids.add(selectedSession.id);
-    for (const child of childSessions) ids.add(child.id);
-    return ids;
-  }, [childRootId, selectedSession, childSessions]);
+  // The family rows themselves, so the polling decision reads the same run
+  // state the panel shows (a live id or a child's own relation status).
+  const familyMembers = useMemo(() => {
+    const byId = new Map<string, SessionInfo>();
+    for (const child of childSessions) byId.set(child.id, child);
+    if (selectedSession) byId.set(selectedSession.id, selectedSession);
+    if (childRootId && !byId.has(childRootId)) {
+      const root = sessionCatalog.find((session) => session.id === childRootId);
+      if (root) byId.set(root.id, root);
+    }
+    return [...byId.values()];
+  }, [childRootId, selectedSession, childSessions, sessionCatalog]);
   const familyRunningKey = useMemo(
-    () => runningFamilyKey(familyMemberIds, runningSessionIds),
-    [familyMemberIds, runningSessionIds],
+    () => runningFamilyKey(familyMembers, runningSessionIds),
+    [familyMembers, runningSessionIds],
   );
   // Show no rows from the previous family while the new one is loading.
   useEffect(() => {

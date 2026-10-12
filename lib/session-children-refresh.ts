@@ -1,3 +1,6 @@
+import type { SessionInfo } from './types';
+import { sessionIsRunning } from './session-display';
+
 /**
  * Polling policy for a selected session's child list.
  *
@@ -9,12 +12,20 @@
  */
 export const CHILDREN_RUNNING_POLL_MS = 4_000;
 
-/** The running subset of the same ids; changes only when a member's run state does. */
+/**
+ * The running subset of the shown family, keyed the same way the panel decides
+ * whether a row is running (`sessionIsRunning`). A detached child an extension
+ * runs has no live web runtime of its own, so its relation status is the only
+ * signal that it is still working — reading one scheme here and another in the
+ * row is what let such a family stop being polled before it finished.
+ */
 export function runningFamilyKey(
-  ids: Iterable<string>,
+  sessions: Iterable<Pick<SessionInfo, "id" | "relation">>,
   runningIds: ReadonlySet<string>,
 ): string {
   const running: string[] = [];
-  for (const id of ids) if (runningIds.has(id)) running.push(id);
+  for (const session of sessions) {
+    if (sessionIsRunning(session, runningIds)) running.push(session.id);
+  }
   return running.sort().join(",");
 }
