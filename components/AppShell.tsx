@@ -74,6 +74,7 @@ import type { FileViewerState } from "@/lib/file-viewer-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
 import { sessionDisplayName, sessionWorkspaceCwd } from "@/lib/session-display";
+import { runningFamilyKey, CHILDREN_RUNNING_POLL_MS } from "@/lib/session-children-refresh";
 import { getLastSettingsSection, settingsSectionRequiresProject, type SettingsSection } from "@/lib/settings-navigation";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
@@ -150,7 +151,17 @@ export function AppShell() {
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
+  // Bumped whenever the server's session list changes (agent end, fork, delete,
+  // rename, new session). The child panel reuses it as its change signal.
+  const [refreshKey, setRefreshKey] = useState(0);
   const [childSessions, setChildSessions] = useState<SessionInfo[]>([]);
+  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  const handleRunningSessionIdsChange = useCallback((ids: Set<string>) => {
+    setRunningSessionIds((previous) => {
+      if (previous.size === ids.size && [...ids].every((id) => previous.has(id))) return previous;
+      return ids;
+    });
+  }, []);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
     setSessionCatalog(sessions);
     // The sidebar hydrates metadata after the selected session has already
@@ -162,6 +173,9 @@ export function AppShell() {
       return refreshed ? mergeCatalogRow(current, refreshed) : current;
     });
   }, []);
+  // The child panel shows one family: the selected session's outermost known
+  // ancestor. This is relation data every catalogue row already carries, so the
+  // shell only reads it — it never scans directories or decides ownership.
   const childRootId = useMemo(() => {
     if (!selectedSession) return undefined;
     const byId = new Map(sessionCatalog.map((session) => [session.id, session]));
@@ -179,9 +193,25 @@ export function AppShell() {
     }
     return current.id;
   }, [selectedSession, sessionCatalog, childSessions]);
+  // Children change when the family changes, when the server reports a new
+  // catalogue, or while one of its members runs. An idle family is never polled.
+  const familyMemberIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (childRootId) ids.add(childRootId);
+    if (selectedSession) ids.add(selectedSession.id);
+    for (const child of childSessions) ids.add(child.id);
+    return ids;
+  }, [childRootId, selectedSession, childSessions]);
+  const familyRunningKey = useMemo(
+    () => runningFamilyKey(familyMemberIds, runningSessionIds),
+    [familyMemberIds, runningSessionIds],
+  );
+  // Show no rows from the previous family while the new one is loading.
   useEffect(() => {
     setChildSessions([]);
-    if (!childRootId) return;
+  }, [childRootId]);
+  useEffect(() => {
+    if (!childRootId) return undefined;
     const controller = new AbortController();
     let pending = false;
     const refresh = async () => {
@@ -203,9 +233,14 @@ export function AppShell() {
       finally { pending = false; }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
+    // Only a running member can produce a new child without a catalogue change.
+    if (!familyRunningKey) return () => controller.abort();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refresh();
+    }, CHILDREN_RUNNING_POLL_MS);
     return () => { controller.abort(); window.clearInterval(interval); };
-  }, [childRootId]);
+  }, [childRootId, familyRunningKey, refreshKey]);
   const sessionsWithSelection = useMemo(() => {
     const byId = new Map(sessionCatalog.map((session) => [session.id, session]));
     for (const child of childSessions) byId.set(child.id, child);
@@ -217,13 +252,6 @@ export function AppShell() {
     [selectedSession?.id, sessionsWithSelection],
   );
   const hasSubagentSessions = Boolean(activeSessionFamily?.subagents.length);
-  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
-  const handleRunningSessionIdsChange = useCallback((ids: Set<string>) => {
-    setRunningSessionIds((previous) => {
-      if (previous.size === ids.size && [...ids].every((id) => previous.has(id))) return previous;
-      return ids;
-    });
-  }, []);
   // The temporary id distinguishes consecutive fresh composers in one cwd.
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [newSessionDraftId, setNewSessionDraftId] = useState("initial");
@@ -253,7 +281,6 @@ export function AppShell() {
     () => initialNavigation.requestedCwd ? "validating" : "idle",
   );
   const [initialCwdError, setInitialCwdError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
   const [sessionKey, setSessionKey] = useState(0);
   const sessionScrollPositionsRef = useRef(new Map<string, ChatScrollPosition>());
   const handleSessionScrollPositionChange = useCallback((sessionId: string, position: ChatScrollPosition) => {

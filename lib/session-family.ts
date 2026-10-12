@@ -78,3 +78,44 @@ export function getSessionFamily(
     || family.subagents.some((session) => session.id === sessionId)
   )) ?? null;
 }
+
+/**
+ * The outermost session that owns `session`, walking `relation.parentSessionId`
+ * through the given rows. A parent that is itself absent from the list is the
+ * answer: its children belong to it, not to whatever it may hang from.
+ *
+ * This is the same walk `listSessionFamilies` groups by, exposed for callers
+ * that hold one row and need its family before the rest has loaded.
+ */
+export function familyRootIdFor(
+  sessions: readonly SessionInfo[],
+  session: SessionInfo,
+): string {
+  const byId = new Map(sessions.map((row) => [row.id, row]));
+  const visited = new Set<string>();
+  let current = session;
+  while (current.relation?.kind === "subagent" && !visited.has(current.id)) {
+    visited.add(current.id);
+    const parentId = current.relation.parentSessionId;
+    const parent = byId.get(parentId);
+    if (!parent) return parentId;
+    current = parent;
+  }
+  return current.id;
+}
+
+/**
+ * Add one row to a catalogue copy, replacing a row the catalogue already has.
+ *
+ * A session that is the child of another session is deliberately absent from
+ * the catalogue: the sidebar shows it inside its parent's row, and deriving it
+ * there would mean scanning every session directory. A deep link to such a
+ * child therefore arrives through the child route instead, and the caller has
+ * to merge that one row into its list to select it.
+ */
+export function appendSessionRow(
+  sessions: readonly SessionInfo[],
+  row: SessionInfo,
+): SessionInfo[] {
+  return [...sessions.filter((session) => session.id !== row.id), row];
+}

@@ -15,7 +15,7 @@ import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-res
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { checkSessionMembership, listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
-import { resolveSessionOwnership } from "./session-relationship";
+import { findStoredSessionFile, resolveSessionOwnership } from "./session-relationship";
 
 export { getAgentDir };
 
@@ -154,18 +154,37 @@ function readSessionRelationEntries(filePath: string): SessionEntry[] {
   ];
 }
 
-export async function attachSessionProjectInfo(sessions: SessionInfo[]): Promise<SessionInfo[]> {
-  // All consumers (catalogue, detail and child panel) share one ownership check.
-  const resolved = sessions.map(resolveSessionOwnership);
+/**
+ * Relation resolution only: which session owns this row, from native metadata
+ * first and verifiable containment second. No project lookup and no filesystem
+ * project probing, so catalogue, detail and child panel share one decision
+ * without coupling it to workspace resolution.
+ */
+export function sessionRelationsFor(sessions: readonly SessionInfo[]): SessionOwnership[] {
+  return sessions.map((session) => resolveSessionOwnership(session));
+}
+
+export type SessionOwnership = ReturnType<typeof resolveSessionOwnership>;
+
+/**
+ * Project-path resolution only. It consumes the relation decision — a child is
+ * reported in its parent's workspace while keeping its own execution cwd — and
+ * never guesses ownership itself.
+ */
+export async function attachSessionProjectInfo(
+  sessions: SessionInfo[],
+  relations: readonly SessionOwnership[] = sessionRelationsFor(sessions),
+): Promise<SessionInfo[]> {
   const uniqueCwds = [...new Set(sessions.map((session, index) =>
-    resolved[index].owner?.cwd ?? session.cwd).filter(Boolean))];
+    relations[index]?.owner?.cwd ?? session.cwd).filter(Boolean))];
   const projectByCwd = new Map<string, ProjectInfo>();
   await Promise.all(uniqueCwds.map(async (cwd) => {
     projectByCwd.set(cwd, await resolveProject(cwd));
   }));
 
   return sessions.map((session, index) => {
-    const { owner, relation } = resolved[index];
+    const owner = relations[index]?.owner ?? null;
+    const relation = relations[index]?.relation;
     const projectCwd = owner?.cwd ?? session.cwd;
     const project = projectCwd ? projectByCwd.get(projectCwd) : undefined;
     const projectRoot = project?.projectRoot ?? projectCwd;
@@ -606,6 +625,15 @@ export async function resolveSessionPath(sessionId: string): Promise<string | nu
   const targetedPath = await findSessionPathById(sessionId);
   if (targetedPath) {
     cacheSessionPath(sessionId, targetedPath);
+    return getPathCache().get(sessionId) ?? null;
+  }
+
+  // Nested container children are never named `…_<id>.jsonl` and the catalogue
+  // scan is deliberately one level deep, so a cold start (fresh process, empty
+  // cache) needs the bounded walk to open them by id or link at all.
+  const discoveredPath = await findStoredSessionFile(sessionId);
+  if (discoveredPath) {
+    cacheSessionPath(sessionId, discoveredPath);
     return getPathCache().get(sessionId) ?? null;
   }
 

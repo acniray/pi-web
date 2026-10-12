@@ -37,6 +37,15 @@ const RICH = "e2e-rich-session";
 const COMPACTED = "e2e-compacted-session";
 const APPEND = "e2e-external-append-session";
 const CODE_BACKGROUND = "e2e-code-background";
+// Session-relation fixtures: the same resolver must classify a native subagent,
+// a third-party container child, a nested grandchild and a plain Fork.
+const NESTED_PARENT = "e2e-nested-parent";
+const NESTED_CHILD = "e2e-nested-child";
+const NESTED_GRANDCHILD = "e2e-nested-grandchild";
+const NATIVE_SUBAGENT = "e2e-native-subagent";
+const USER_FORK = "e2e-user-fork";
+const CHILD_UUID = "11111111-2222-3333-4444-555555555555";
+const GRANDCHILD_UUID = "66666666-7777-8888-9999-aaaaaaaaaaaa";
 const text = (i) => `E2E message ${String(i).padStart(4, "0")}`;
 const ids = (start, end) => Array.from({ length: end - start }, (_, i) => `e${start + i}`);
 
@@ -49,6 +58,21 @@ function writeSession(id, entries) {
   writeFileSync(join(sessionDir, `2026-08-23T00-00-00-000Z_${id}.jsonl`),
     [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
 }
+
+function writeSessionFile(filePath, header, entries = []) {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, [header, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+}
+
+/** The container Pi's own subagent plugins own: `<parent file without .jsonl>/` and a
+ * child whose own file is a nested `session.jsonl`, never a `_<id>.jsonl`. */
+const nestedContainer = join(sessionDir, `2026-08-23T00-00-00-000Z_${NESTED_PARENT}`);
+const nestedChildFile = join(nestedContainer, CHILD_UUID, "run-0", "session.jsonl");
+const nestedGrandchildFile = join(nestedChildFile.replace(/\.jsonl$/, ""), GRANDCHILD_UUID, "run-0", "session.jsonl");
+const nestedParentFile = join(sessionDir, `2026-08-23T00-00-00-000Z_${NESTED_PARENT}.jsonl`);
+// A child runs in its own directory; only its project comes from the parent.
+const childCwd = join(agentDir, "child-cwd");
+mkdirSync(childCwd, { recursive: true });
 
 let server;
 let serverExited;
@@ -144,6 +168,44 @@ try {
     message("root", null, "user", "E2E wrapper root"),
     message("reply", "root", "assistant", "E2E wrapper reply"),
   ]);
+  writeSession(NESTED_PARENT, [message("p1", null, "user", "E2E nested parent prompt")]);
+  writeSessionFile(nestedChildFile, {
+    type: "session", version: 3, id: NESTED_CHILD, timestamp, cwd: childCwd, parentSession: nestedParentFile,
+  }, [message("c1", null, "user", "E2E nested child prompt")]);
+  writeSessionFile(nestedGrandchildFile, {
+    type: "session", version: 3, id: NESTED_GRANDCHILD, timestamp, cwd: childCwd,
+    parentSession: nestedChildFile,
+  }, [message("g1", null, "user", "E2E nested grandchild prompt")]);
+  // A native Subagent is a top-level session whose header names its parent.
+  // Its own metadata entry then wins over containment (it sits in no container).
+  writeSessionFile(join(sessionDir, `2026-08-23T00-00-00-000Z_${NATIVE_SUBAGENT}.jsonl`), {
+    type: "session", version: 3, id: NATIVE_SUBAGENT, timestamp, cwd: project, parentSession: nestedParentFile,
+  }, [
+    // The running agent records its own metadata as the entry right after the header,
+    // which is where the bounded relation read can still see it. Keep it there.
+    {
+      type: "custom",
+      customType: "pi-web:subagent",
+      id: "meta",
+      parentId: null,
+      timestamp,
+      data: {
+        version: 1,
+        parentSessionId: NESTED_PARENT,
+        parentSessionPath: nestedParentFile,
+        parentToolCallId: "e2e-tool-call",
+        profile: "e2e-checker",
+        description: "E2E native subagent",
+      },
+    },
+    message("s1", null, "user", "E2E native subagent prompt"),
+  ]);
+  // A Fork keeps its parentSession header but sits at the store's top level and
+  // no container of that parent owns it, so it must stay a Fork.
+  writeSessionFile(join(sessionDir, `2026-08-23T00-00-00-000Z_${USER_FORK}.jsonl`), {
+    type: "session", version: 3, id: USER_FORK, timestamp, cwd: project,
+    parentSession: join(sessionDir, `2026-08-23T00-00-00-000Z_${LONG}.jsonl`),
+  }, [message("f1", null, "user", "E2E user fork prompt")]);
 
   const probe = createServer();
   probe.listen(0, "127.0.0.1");
@@ -185,7 +247,8 @@ try {
     const response = await fetch(`${base}/api/sessions`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
     if (response?.ok) {
       const { sessions } = await response.json();
-      assert.deepEqual(sessions.map((session) => session.id).sort(), [LONG, BRANCH, RICH, COMPACTED, APPEND, CODE_BACKGROUND].sort());
+      assert.deepEqual(sessions.map((session) => session.id).sort(),
+        [LONG, BRANCH, RICH, COMPACTED, APPEND, CODE_BACKGROUND, NESTED_PARENT, NATIVE_SUBAGENT, USER_FORK].sort());
       break;
     }
     assert.ok(Date.now() < deadline, "Server readiness timed out; see server.log");
@@ -214,6 +277,94 @@ try {
   assert.equal(compacted.context.entryIds[0], "compact");
   assert.equal(compacted.context.messages.some((entry) => entry.role === "user"), false);
   console.log("PASS: bounded history, branch context, pagination root, and API errors");
+
+  // Session relations (#session-relations): the catalogue, the detail route and
+  // the child panel must agree, and a nested container child must stay openable
+  // by id/URL from a cold process. Every check below runs against the compiled
+  // Turbopack server, unlike the jiti unit tests.
+  {
+    const expectKind = (session, kind, where) => {
+      assert.equal(session?.relation?.kind, kind, `${where}: ${session?.id} -> ${session?.relation?.kind}`);
+    };
+    const catalog = await api("/api/sessions");
+    const byId = new Map(catalog.sessions.map((session) => [session.id, session]));
+    assert.deepEqual(catalog.sessions.map((session) => session.id).filter((id) =>
+      id === NESTED_CHILD || id === NESTED_GRANDCHILD).sort(), [],
+      "nested container children stay out of the top-level catalogue");
+    expectKind(byId.get(NATIVE_SUBAGENT), "subagent", "catalogue");
+    assert.equal(byId.get(NATIVE_SUBAGENT).relation.parentSessionId, NESTED_PARENT);
+    expectKind(byId.get(USER_FORK), "fork", "catalogue");
+    assert.equal(byId.get(NESTED_PARENT).relation, undefined, "an ordinary session has no relation");
+
+    // Cold start: id -> path -> row, both for the container child and the plain Fork.
+    const childDetail = await api(`/api/sessions/${NESTED_CHILD}`);
+    expectKind(childDetail.info, "subagent", "detail");
+    assert.equal(childDetail.info.relation.parentSessionId, NESTED_PARENT);
+    assert.equal(childDetail.info.cwd, childCwd, "the child keeps its own execution directory");
+    assert.equal(childDetail.info.projectRoot, project, "the child is reported in its parent's workspace");
+    const forkDetail = await api(`/api/sessions/${USER_FORK}`);
+    expectKind(forkDetail.info, "fork", "detail");
+    assert.equal(forkDetail.info.relation.kind !== "subagent", true, "an ordinary Fork is never a subagent");
+    const nativeDetail = await api(`/api/sessions/${NATIVE_SUBAGENT}`);
+    expectKind(nativeDetail.info, "subagent", "native detail");
+    assert.equal(nativeDetail.info.relation.profile, "e2e-checker", "native metadata wins over containment");
+
+    // The child panel resolves the container and keeps every direct edge. A
+    // native Subagent is a top-level session, so the catalogue (not the
+    // container walk) is what puts it in the same family.
+    const children = await api(`/api/sessions/${NESTED_PARENT}/children`);
+    assert.deepEqual(children.sessions.map((session) => session.id).sort(),
+      [NESTED_CHILD, NESTED_GRANDCHILD].sort(),
+      "the panel carries the whole container family");
+    const directParents = new Map(children.sessions.map((session) => [session.id, session.relation?.parentSessionId]));
+    assert.equal(directParents.get(NESTED_CHILD), NESTED_PARENT);
+    assert.equal(directParents.get(NESTED_GRANDCHILD), NESTED_CHILD,
+      "a nested child keeps its direct parent, never the family root");
+    for (const child of children.sessions) {
+      expectKind(child, "subagent", "child panel");
+      assert.equal(child.projectRoot, project, "a child inherits the parent's project");
+    }
+    assert.equal(children.sessions.find((session) => session.id === NESTED_CHILD).cwd, childCwd,
+      "the child panel keeps the child's own execution directory");
+    const grandchildren = await api(`/api/sessions/${NESTED_CHILD}/children`);
+    assert.deepEqual(grandchildren.sessions.map((session) => session.id), [NESTED_GRANDCHILD]);
+    assert.equal(grandchildren.sessions[0].relation.parentSessionId, NESTED_CHILD,
+      "a grandchild keeps its direct parent, not the family root");
+    const forkChildren = await api(`/api/sessions/${LONG}/children`);
+    assert.deepEqual(forkChildren.sessions, [], "a Fork is not a child");
+    await api("/api/sessions/e2e-does-not-exist/children", 404);
+    console.log("PASS: session relations agree across catalogue, detail and child panel, cold start included");
+  }
+
+  // A cold process must also open a nested child from a URL, not only by API.
+  {
+    const coldBrowser = await chromium.launch();
+    try {
+      const coldContext = await coldBrowser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+      const coldPage = await coldContext.newPage();
+      coldPage.setDefaultTimeout(30_000);
+      await coldPage.goto(`${base}/?session=${NESTED_CHILD}`, { waitUntil: "domcontentloaded" });
+      await coldPage.getByText("E2E nested child prompt", { exact: true }).waitFor();
+      const panel = coldPage.locator("#session-sidebar-panel-sessions");
+      // A child is shown inside its parent's family, so the family root's row is
+      // the visible one and it is the row that carries the selection.
+      const familyRow = panel.locator(`[data-row-key$=":${NESTED_PARENT}"]`);
+      await familyRow.waitFor();
+      const current = panel.locator('.session-tree-main[aria-current="true"]');
+      await current.waitFor();
+      assert.equal(await current.count(), 1, "a linked child resolves to exactly one selected row");
+      assert.ok((await current.getAttribute("href"))?.includes(`session=${NESTED_PARENT}`),
+        "the selected row is the family the linked child belongs to");
+      // The address keeps the child: losing it is exactly the failure this
+      // check exists for (the shell used to close the session and reset to /).
+      assert.ok(new URL(coldPage.url()).searchParams.get("session") === NESTED_CHILD,
+        "the child stays addressed by the URL");
+      await coldContext.close();
+    } finally {
+      await coldBrowser.close();
+    }
+    console.log("PASS: a nested child session opens from a direct link after a restart");
+  }
 
   // #632 regression: a live wrapper shadows the session file. Ordinary reads
   // keep that snapshot (two processes writing one JSONL is unsupported). A

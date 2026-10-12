@@ -1,6 +1,6 @@
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { lstatSync, realpathSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readRegularFileText } from './regular-file';
@@ -13,6 +13,21 @@ import type { SessionInfo, SubagentSessionStatus } from './types';
 const MAX_CHILDREN = 1000;
 const MAX_DEPTH = 6;
 const MAX_ENTRIES = 5000;
+/**
+ * The child list is keyed by its inputs' fingerprints instead of being
+ * re-derived on a fixed timer: an unchanged parent, container and status
+ * documents answer from this cache, while any of them changing re-derives it.
+ */
+interface ChildrenDiscoveryEntry {
+  signature: string;
+  sessions: SessionInfo[];
+}
+const childrenDiscovery = new Map<string, ChildrenDiscoveryEntry>();
+/** Drops the cached child list of one parent, or of every parent. */
+export function invalidateSessionChildrenDiscovery(parentPath?: string): void {
+  if (parentPath) childrenDiscovery.delete(resolve(parentPath));
+  else childrenDiscovery.clear();
+}
 export interface SessionReference {
   label?: string;
   sessionName?: string;
@@ -69,7 +84,7 @@ function contained(root: string, path: string): boolean {
  * No package locations, tool names or UUID layouts are assumed. The document
  * must assert this parent session's ownership before its references are used.
  */
-function referencedStatusMetadata(details: unknown, parentId: string, parentPath: string): Map<string, SessionReference> {
+function referencedStatusMetadata(details: unknown, parentId: string, parentPath: string, statusFiles: Set<string>): Map<string, SessionReference> {
   const refs = new Map<string, SessionReference>();
   const queue: unknown[] = [details];
   let visited = 0;
@@ -84,6 +99,9 @@ function referencedStatusMetadata(details: unknown, parentId: string, parentPath
         const real = realpathSync(path);
         if (![tmpdir(), getAgentDir()].some(root => contained(realpathSync(root), real)) || lstatSync(path).isSymbolicLink()) continue;
         filesRead++;
+        // The document decides labels and can decide ownership, so its own
+        // bytes take part in the unchanged-container signature below.
+        statusFiles.add(path);
         const text = readRegularFileText(path, 1024 * 1024);
         const status = text ? JSON.parse(text) : null;
         const owner = status?.sessionId;
@@ -96,18 +114,9 @@ function referencedStatusMetadata(details: unknown, parentId: string, parentPath
   }
   return refs;
 }
-export async function listSessionChildren(parentId: string, parentPath: string): Promise<SessionInfo[]> {
-  if (!isRegularStoredSessionFile(parentPath) || readSessionHeader(parentPath)?.id !== parentId) return [];
-  const references = new Map<string, SessionReference>();
-  const currentReferences = new Map<string, SessionReference>();
-  for (const entry of openSessionManager(parentPath).getBranch()) {
-    if (entry.type !== 'message' || entry.message.role !== 'toolResult') continue;
-    for (const [path, ref] of collectSessionReferences(entry.message.details)) references.set(path, { ...references.get(path), ...ref });
-    for (const [path, ref] of referencedStatusMetadata(entry.message.details, parentId, parentPath)) currentReferences.set(path, { ...currentReferences.get(path), ...ref });
-  }
-  for (const [path, ref] of currentReferences) references.set(path, { ...references.get(path), ...ref });
+/** The container's own file listing: where a new child shows up first. */
+async function scanContainer(container: string): Promise<Set<string>> {
   const paths = new Set<string>();
-  const container = parentPath.slice(0, -'.jsonl'.length);
   const queue = [{ path: container, depth: 0 }];
   let entriesRead = 0;
   while (queue.length && paths.size < MAX_CHILDREN && entriesRead < MAX_ENTRIES) {
@@ -124,12 +133,62 @@ export async function listSessionChildren(parentId: string, parentPath: string):
       else if (entry.isDirectory() && dir.depth < MAX_DEPTH) queue.push({ path, depth: dir.depth + 1 });
     }
   }
+  return paths;
+}
+/** Parent history plus the container's files: the two things a child list comes from. */
+async function childrenSignature(parentPath: string, containerPaths: Iterable<string>, statusFiles: Iterable<string>): Promise<string> {
+  const parts: string[] = [];
+  try {
+    const stats = await stat(parentPath);
+    parts.push(`${stats.size}:${stats.mtimeMs}`);
+  } catch { /* A parent that vanished still yields an empty list. */ }
+  const listed: string[] = [];
+  for (const path of [...containerPaths, ...statusFiles]) {
+    try {
+      const stats = await stat(path);
+      listed.push(`${resolve(path)}|${stats.size}|${stats.mtimeMs}`);
+    } catch { listed.push(resolve(path)); }
+  }
+  listed.sort();
+  return `${parts.join(':')}#${listed.join('\n')}`;
+}
+/** Labels and live status declared by the parent's own tool results. */
+function collectChildReferences(parentId: string, parentPath: string, statusFiles: Set<string>): Map<string, SessionReference> {
+  const references = new Map<string, SessionReference>();
+  const currentReferences = new Map<string, SessionReference>();
+  for (const entry of openSessionManager(parentPath).getBranch()) {
+    if (entry.type !== 'message' || entry.message.role !== 'toolResult') continue;
+    for (const [path, ref] of collectSessionReferences(entry.message.details)) references.set(path, { ...references.get(path), ...ref });
+    for (const [path, ref] of referencedStatusMetadata(entry.message.details, parentId, parentPath, statusFiles)) currentReferences.set(path, { ...currentReferences.get(path), ...ref });
+  }
+  for (const [path, ref] of currentReferences) references.set(path, { ...references.get(path), ...ref });
+  return references;
+}
+export async function listSessionChildren(parentId: string, parentPath: string): Promise<SessionInfo[]> {
+  if (!isRegularStoredSessionFile(parentPath) || readSessionHeader(parentPath)?.id !== parentId) return [];
+  const container = parentPath.slice(0, -'.jsonl'.length);
+  // The parent's history is the source of labels, live status and referenced
+  // paths, so it is read before the cheap container listing decides whether
+  // anything changed since the last identical answer.
+  const statusFiles = new Set<string>();
+  const references = collectChildReferences(parentId, parentPath, statusFiles);
+  const paths = await scanContainer(container);
   // Tool-result paths supply labels/status, not ownership. An explicit path is
   // eligible only when the same on-disk parent relationship independently holds.
   for (const path of references.keys()) {
     if (paths.size >= MAX_CHILDREN) break;
     if (identifyContainedSession(path)?.id === parentId) paths.add(path);
   }
+  const signature = await childrenSignature(parentPath, paths, statusFiles);
+  const cacheKey = resolve(parentPath);
+  const cached = childrenDiscovery.get(cacheKey);
+  if (cached && cached.signature === signature) return cached.sessions;
+  const sessions = await discoverSessionChildren(parentId, parentPath, paths, references);
+  childrenDiscovery.set(cacheKey, { signature, sessions });
+  return sessions;
+}
+/** The cached rows are shared, read-only values; callers must not mutate them. */
+async function discoverSessionChildren(parentId: string, parentPath: string, paths: Set<string>, references: Map<string, SessionReference>): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = [];
   // The children list never runs project resolution; the parent's own workspace
   // is the workspace its children work in (AppShell resolves it through

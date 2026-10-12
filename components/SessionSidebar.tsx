@@ -2,7 +2,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
-import { listSessionFamilies, type SessionFamily } from "@/lib/session-family";
+import { appendSessionRow, familyRootIdFor, listSessionFamilies, type SessionFamily } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { sessionDeepLink } from "@/lib/session-links";
 import { getProjectActivity, getRecentProjects } from "@/lib/project-groups";
@@ -1110,6 +1110,27 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     if (allSessions.length === 0 || skipInitialProjectSelection) return;
 
+    // A child session is shown inside its parent's row and is deliberately not
+    // part of the session catalogue (deriving it there would mean scanning the
+    // whole store). A link to one therefore resolves through its family root's
+    // child route instead of the list.
+    const restoreLinkedChild = async (): Promise<SessionInfo | null> => {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(initialSessionId!)}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) return null;
+      const detail = await response.json() as { info?: SessionInfo };
+      const row = detail.info;
+      if (!row || row.relation?.kind !== "subagent") return null;
+      const rootId = familyRootIdFor(allSessions, row);
+      const children = await fetch(`/api/sessions/${encodeURIComponent(rootId)}/children`, {
+        cache: "no-store",
+      });
+      if (!children.ok) return null;
+      const body = await children.json() as { sessions?: SessionInfo[] };
+      return body.sessions?.find((child) => child.id === initialSessionId) ?? null;
+    };
+
     if (selectedCwd === null) {
       // If restoring a session, set cwd to match that session
       if (initialSessionId && !restoredRef.current) {
@@ -1120,9 +1141,37 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           onSelectSession(target, true);
           return;
         }
-        // Session not found — notify parent so it can show the placeholder
-        onInitialRestoreDone?.();
-        if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+        const reportMissing = () => {
+          onInitialRestoreDone?.();
+          if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+        };
+        // A link that names nothing still leaves the sidebar a workspace to
+        // show, exactly as the no-link path below does.
+        const selectRecentProject = () => {
+          const recent = getRecentProjects(allSessions);
+          if (recent.length > 0) setSelectedCwd(recent[0].root);
+        };
+        if (!initialSessionLinked) {
+          reportMissing();
+        } else {
+          void restoreLinkedChild()
+            .then((linked) => {
+              if (!linked) { reportMissing(); selectRecentProject(); return; }
+              // A child runs in its own directory; the files tab and the project
+              // identity belong to the workspace its parent uses, which the
+              // child row reports as projectRoot. Adopting the raw execution cwd
+              // would look like a project switch once /api/worktrees resolves,
+              // closing the freshly restored session and clearing the link.
+              setSelectedCwd(linked.projectRoot ?? linked.cwd);
+              // The tree marks a family selected through its members, and a
+              // child is not in the catalogue, so the one row has to join the
+              // list for its parent's row to show the selection.
+              setAllSessions((current) => appendSessionRow(current, linked));
+              onSelectSession(linked, true);
+            })
+            .catch(() => { reportMissing(); selectRecentProject(); });
+          return;
+        }
       }
       const projects = getRecentProjects(allSessions);
       if (projects.length > 0) setSelectedCwd(projects[0].root);
