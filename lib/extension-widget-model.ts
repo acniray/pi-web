@@ -60,7 +60,7 @@ export interface TaskTreeStateCounts {
   rejected: number;
 }
 
-export function countTaskTreeStates(nodes: readonly TaskTreeNode[]): TaskTreeStateCounts {
+function countTaskTreeStatesWhere(nodes: readonly TaskTreeNode[], count: (node: TaskTreeNode) => boolean): TaskTreeStateCounts {
   const counts: TaskTreeStateCounts = {
     queued: 0,
     running: 0,
@@ -73,34 +73,19 @@ export function countTaskTreeStates(nodes: readonly TaskTreeNode[]): TaskTreeSta
   };
 
   const visit = (node: TaskTreeNode) => {
-    counts[node.state] += 1;
+    if (count(node)) counts[node.state] += 1;
     node.children?.forEach(visit);
   };
   nodes.forEach(visit);
   return counts;
 }
 
-export function countTaskTreeLeafStates(nodes: readonly TaskTreeNode[]): TaskTreeStateCounts {
-  const counts: TaskTreeStateCounts = {
-    queued: 0,
-    running: 0,
-    complete: 0,
-    failed: 0,
-    partial: 0,
-    paused: 0,
-    stopped: 0,
-    rejected: 0,
-  };
+export function countTaskTreeStates(nodes: readonly TaskTreeNode[]): TaskTreeStateCounts {
+  return countTaskTreeStatesWhere(nodes, () => true);
+}
 
-  const visit = (node: TaskTreeNode) => {
-    if (node.children?.length) {
-      node.children.forEach(visit);
-      return;
-    }
-    counts[node.state] += 1;
-  };
-  nodes.forEach(visit);
-  return counts;
+export function countTaskTreeLeafStates(nodes: readonly TaskTreeNode[]): TaskTreeStateCounts {
+  return countTaskTreeStatesWhere(nodes, (node) => !node.children?.length);
 }
 
 export function findTaskTreeNode(

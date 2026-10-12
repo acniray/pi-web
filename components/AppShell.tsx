@@ -36,7 +36,7 @@ import {
   showBrowserNotification,
 } from "@/lib/browser-notifications";
 import { setupPushSubscription } from "@/lib/push-client";
-import { getInitialNavigation, withTabOpen } from "@/lib/initial-navigation";
+import { getInitialNavigation, linkedSessionId, withTabOpen } from "@/lib/initial-navigation";
 import { clearTabOpenSession, getTabOpen, setTabOpenNewSession, setTabOpenSession } from "@/lib/tab-session";
 import { mergeCatalogRow } from "./session-catalog-helpers";
 import { getDraft, rekeyDraft } from "@/lib/draft-store";
@@ -74,6 +74,7 @@ import type { FileViewerState } from "@/lib/file-viewer-state";
 import { PRESET_READ_ONLY, type ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
 import { sessionDisplayName, sessionWorkspaceCwd } from "@/lib/session-display";
+import { runningFamilyKey, CHILDREN_RUNNING_POLL_MS } from "@/lib/session-children-refresh";
 import { getLastSettingsSection, settingsSectionRequiresProject, type SettingsSection } from "@/lib/settings-navigation";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
@@ -123,7 +124,7 @@ export function AppShell() {
   // Audio ownership lives here (not in ChatWindow) so the completion tone can
   // also fire for tasks finishing in a non-active workspace whose ChatWindow
   // is not mounted. ChatWindow receives the audio callbacks as props.
-  const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio, soundEnabledRef } = useAudio();
+  const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio, holdAudio, soundEnabledRef } = useAudio();
   const [quoteSelectionEnabled, setQuoteSelectionEnabled] = useState(false);
   useEffect(() => {
     try {
@@ -150,7 +151,17 @@ export function AppShell() {
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
+  // Bumped whenever the server's session list changes (agent end, fork, delete,
+  // rename, new session). The child panel reuses it as its change signal.
+  const [refreshKey, setRefreshKey] = useState(0);
   const [childSessions, setChildSessions] = useState<SessionInfo[]>([]);
+  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  const handleRunningSessionIdsChange = useCallback((ids: Set<string>) => {
+    setRunningSessionIds((previous) => {
+      if (previous.size === ids.size && [...ids].every((id) => previous.has(id))) return previous;
+      return ids;
+    });
+  }, []);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
     setSessionCatalog(sessions);
     // The sidebar hydrates metadata after the selected session has already
@@ -162,11 +173,50 @@ export function AppShell() {
       return refreshed ? mergeCatalogRow(current, refreshed) : current;
     });
   }, []);
-  const childRootId = selectedSession?.relation?.kind === "subagent"
-    ? selectedSession.relation.parentSessionId : selectedSession?.id;
+  // The child panel shows one family: the selected session's outermost known
+  // ancestor. This is relation data every catalogue row already carries, so the
+  // shell only reads it — it never scans directories or decides ownership.
+  const childRootId = useMemo(() => {
+    if (!selectedSession) return undefined;
+    const byId = new Map(sessionCatalog.map((session) => [session.id, session]));
+    for (const child of childSessions) byId.set(child.id, child);
+    byId.set(selectedSession.id, selectedSession);
+    let current = selectedSession;
+    const seen = new Set<string>();
+    for (let depth = 0; depth < 16 && current.relation?.kind === "subagent"; depth++) {
+      if (seen.has(current.id)) break;
+      seen.add(current.id);
+      const parentId = current.relation.parentSessionId;
+      const parent = byId.get(parentId);
+      if (!parent) return parentId;
+      current = parent;
+    }
+    return current.id;
+  }, [selectedSession, sessionCatalog, childSessions]);
+  // Children change when the family changes, when the server reports a new
+  // catalogue, or while one of its members runs. An idle family is never polled.
+  // The family rows themselves, so the polling decision reads the same run
+  // state the panel shows (a live id or a child's own relation status).
+  const familyMembers = useMemo(() => {
+    const byId = new Map<string, SessionInfo>();
+    for (const child of childSessions) byId.set(child.id, child);
+    if (selectedSession) byId.set(selectedSession.id, selectedSession);
+    if (childRootId && !byId.has(childRootId)) {
+      const root = sessionCatalog.find((session) => session.id === childRootId);
+      if (root) byId.set(root.id, root);
+    }
+    return [...byId.values()];
+  }, [childRootId, selectedSession, childSessions, sessionCatalog]);
+  const familyRunningKey = useMemo(
+    () => runningFamilyKey(familyMembers, runningSessionIds),
+    [familyMembers, runningSessionIds],
+  );
+  // Show no rows from the previous family while the new one is loading.
   useEffect(() => {
     setChildSessions([]);
-    if (!childRootId) return;
+  }, [childRootId]);
+  useEffect(() => {
+    if (!childRootId) return undefined;
     const controller = new AbortController();
     let pending = false;
     const refresh = async () => {
@@ -188,9 +238,14 @@ export function AppShell() {
       finally { pending = false; }
     };
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
+    // Only a running member can produce a new child without a catalogue change.
+    if (!familyRunningKey) return () => controller.abort();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refresh();
+    }, CHILDREN_RUNNING_POLL_MS);
     return () => { controller.abort(); window.clearInterval(interval); };
-  }, [childRootId]);
+  }, [childRootId, familyRunningKey, refreshKey]);
   const sessionsWithSelection = useMemo(() => {
     const byId = new Map(sessionCatalog.map((session) => [session.id, session]));
     for (const child of childSessions) byId.set(child.id, child);
@@ -202,13 +257,6 @@ export function AppShell() {
     [selectedSession?.id, sessionsWithSelection],
   );
   const hasSubagentSessions = Boolean(activeSessionFamily?.subagents.length);
-  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
-  const handleRunningSessionIdsChange = useCallback((ids: Set<string>) => {
-    setRunningSessionIds((previous) => {
-      if (previous.size === ids.size && [...ids].every((id) => previous.has(id))) return previous;
-      return ids;
-    });
-  }, []);
   // The temporary id distinguishes consecutive fresh composers in one cwd.
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [newSessionDraftId, setNewSessionDraftId] = useState("initial");
@@ -238,7 +286,6 @@ export function AppShell() {
     () => initialNavigation.requestedCwd ? "validating" : "idle",
   );
   const [initialCwdError, setInitialCwdError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
   const [sessionKey, setSessionKey] = useState(0);
   const sessionScrollPositionsRef = useRef(new Map<string, ChatScrollPosition>());
   const handleSessionScrollPositionChange = useCallback((sessionId: string, position: ChatScrollPosition) => {
@@ -654,6 +701,7 @@ export function AppShell() {
   }, [isMobile]);
 
   const initialSessionId = initialNavigation.sessionId;
+  const initialLinkedSessionId = linkedSessionId(initialNavigation);
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
   const activeProjectKeyRef = useRef<string | null>(null);
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
@@ -669,6 +717,9 @@ export function AppShell() {
   }, [initialNavigation]);
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
   const suppressCwdBumpRef = useRef(false);
+  // Set when the session the URL linked to is gone: the project the sidebar
+  // adopts next keeps a fresh composer instead of restoring its last session.
+  const skipWorkspaceRestoreRef = useRef(false);
   // Guards the async workspace restore so a slow response from an earlier
   // switch cannot resurrect a session into a project the user already left.
   const workspaceRestoreTokenRef = useRef(0);
@@ -801,6 +852,8 @@ export function AppShell() {
     setActiveCwd(cwd);
     // Skip if cwd is null (initial mount).
     if (!cwd) return;
+    const skipWorkspaceRestore = skipWorkspaceRestoreRef.current;
+    skipWorkspaceRestoreRef.current = false;
     const newProject = projectKey ?? projectRoot ?? cwd;
     const currentProject = activeProjectKeyRef.current
       ?? (selectedSession ? workspaceKeyOf(selectedSession) : null);
@@ -856,7 +909,7 @@ export function AppShell() {
       changeFileWorkspace(currentProject, newProject);
       // Restore the workspace we switched to: its last open session, or keep
       // the default welcome page when none is remembered.
-      restoreWorkspaceContext(newProject, cwd);
+      if (!skipWorkspaceRestore) restoreWorkspaceContext(newProject, cwd);
     }
     router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
   }, [activeCwd, changeFileWorkspace, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
@@ -1039,9 +1092,10 @@ export function AppShell() {
   }, [handleSelectSession, locale]);
 
   const handleAgentEnd = useCallback((end: AgentEndInfo) => {
+    // The sidebar's reload merges the selected session's new row into it
+    // (handleSessionsChange), so no list fetch of its own here.
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
-    if (selectedSession) hydrateSelectedSession(selectedSession.id);
 
     if (end.aborted || selectedSession?.relation?.kind === "subagent") return;
     if (!shouldShowBrowserNotification()) return;
@@ -1052,7 +1106,7 @@ export function AppShell() {
       body: translate("i18n.taskFinished"),
       tag: targetSession ? `pi-session-complete:${targetSession.id}` : "pi-session-complete",
     });
-  }, [deliverSessionNotification, hydrateSelectedSession, selectedSession, translate]);
+  }, [deliverSessionNotification, selectedSession, translate]);
 
   const handleAttentionNeeded = useCallback((request: BlockingExtensionUiRequest) => {
     if (selectedSession?.relation?.kind === "subagent") return;
@@ -1152,9 +1206,11 @@ export function AppShell() {
     handleSessionForked(result.newSessionId);
   }, [handleSessionForked, translate]);
 
+  // The sidebar calls this when the initial session is not in its list.
   const handleInitialRestoreDone = useCallback(() => {
     setInitialSessionRestored(true);
-  }, []);
+    if (initialLinkedSessionId) skipWorkspaceRestoreRef.current = true;
+  }, [initialLinkedSessionId]);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
     invalidateWorkspaceRestore();
@@ -1426,6 +1482,7 @@ export function AppShell() {
         controlRef={sidebarControlRef}
         onNewSessionContextChange={handleSidebarNewSessionContext}
         initialSessionId={initialSessionId}
+        initialSessionLinked={initialLinkedSessionId !== null}
         skipInitialProjectSelection={initialNavigation.requestedCwd !== null}
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
@@ -2591,6 +2648,7 @@ export function AppShell() {
               onSoundToggle={onSoundToggle}
               playDoneSound={playDoneSound}
               unlockAudio={unlockAudio}
+              holdAudio={holdAudio}
             />
           ) : initialCwdStatus === "validating" ? (
             <div

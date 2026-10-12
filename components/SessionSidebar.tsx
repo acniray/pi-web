@@ -2,8 +2,9 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref, type RefObject, type UIEvent as ReactUIEvent } from "react";
 import type { SessionInfo } from "@/lib/types";
-import { listSessionFamilies, type SessionFamily } from "@/lib/session-family";
+import { appendSessionRow, familyRootIdFor, listSessionFamilies, type SessionFamily } from "@/lib/session-family";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
+import { sessionDeepLink } from "@/lib/session-links";
 import { getProjectActivity, getRecentProjects } from "@/lib/project-groups";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import {
@@ -12,6 +13,7 @@ import {
   buildSessionTree,
   effectiveGroupExpansion,
   familiesToArchive,
+  familiesToDelete,
   familyIds,
   forgetKeptOpenGroups,
   forgetShownMoreOfFolded,
@@ -42,6 +44,7 @@ import {
   type SidebarTab,
 } from "@/lib/sidebar-prefs";
 import {
+  deleteProjectSessions,
   forkFailureMessage,
   projectNameMenuEntries,
   projectRenameRequest,
@@ -94,6 +97,7 @@ import {
   FolderIcon,
   MessageIcon,
   ForkIcon,
+  OpenInNewTabIcon,
   PencilIcon,
   PinIcon,
   PinOffIcon,
@@ -197,6 +201,8 @@ interface Props {
   /** The sidebar's cwd as the bar above a fresh composer shows it; reported when that changes. */
   onNewSessionContextChange?: (context: NewSessionContext | null) => void;
   initialSessionId?: string | null;
+  /** `initialSessionId` is the URL's `?session=`: a toast says so when it is gone. */
+  initialSessionLinked?: boolean;
   skipInitialProjectSelection?: boolean;
   onInitialRestoreDone?: () => void;
   refreshKey?: number;
@@ -272,10 +278,10 @@ interface ValidatedProject {
 
 type SessionRow = Extract<SidebarRow, { kind: "session" }>;
 
-/** The one popup menu of the sidebar; kept here, above the virtualized rows. */
+/** The one popup menu of the sidebar; kept here, above the virtualized rows. `askDelete`: a group menu turned into its "Delete all sessions" question. */
 type SidebarMenuState =
   | { kind: "row"; row: SessionRow; anchor: SidebarMenuAnchor; opener: HTMLElement | null }
-  | { kind: "group"; project: SidebarProject; olderCount: number; anchor: SidebarMenuAnchor; opener: HTMLElement };
+  | { kind: "group"; project: SidebarProject; olderCount: number; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: boolean };
 
 const UNREAD_SESSIONS_STORAGE_KEY = "pi-web:unread-session-ids";
 const LAST_CUSTOM_CWD_STORAGE_KEY = "pi-web:last-custom-cwd";
@@ -302,6 +308,7 @@ const SESSIONS_SECTION_MIN_HEIGHT = 120;
 const SIDEBAR_HEADER_HEIGHT = 36;
 
 const SESSION_ACTION_LABEL_KEYS: Record<SessionMenuActionId, string> = {
+  "open-new-tab": "sidebar.openInNewTab",
   pin: "sidebar.pin",
   unpin: "sidebar.unpin",
   rename: "sidebar.rename",
@@ -315,6 +322,7 @@ const SESSION_ACTION_LABEL_KEYS: Record<SessionMenuActionId, string> = {
 
 function sessionActionIcon(id: SessionMenuActionId): ReactNode {
   switch (id) {
+    case "open-new-tab": return <OpenInNewTabIcon />;
     case "pin": return <PinIcon />;
     case "unpin": return <PinOffIcon />;
     case "rename": return <PencilIcon />;
@@ -468,7 +476,7 @@ function buttonAnchor(element: HTMLElement, align: "start" | "end"): SidebarMenu
   return { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, align };
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, controlRef, onNewSessionContextChange, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
@@ -584,6 +592,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   selectedSessionIdRef.current = selectedSessionId;
   const [toast, setToast] = useState<SidebarToastData | null>(null);
   const toastIdRef = useRef(0);
+  const showToast = useCallback((message: string, actions: SidebarToastAction[] = [], tail?: string) => {
+    toastIdRef.current += 1;
+    setToast({ id: toastIdRef.current, message, ...(tail ? { tail } : {}), actions });
+  }, []);
   const [uiWriteFailures, setUiWriteFailures] = useState(0);
   const shownUiWriteFailuresRef = useRef(0);
   // Focus to hand to the files once they show (revealFiles): the control
@@ -765,7 +777,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }, SESSION_DETAILS_HYDRATION_DELAY_MS);
       });
     } else {
-      void loadSessions(false, true);
+      // Every refreshKey bump follows a change the server already invalidated
+      // the list for (a run's agent_end, a fork, a delete, a name, a new
+      // session). Forcing would rescan again and bump the version, so every
+      // other open tab would reload the list once more.
+      void loadSessions();
     }
 
     return () => {
@@ -941,8 +957,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const hasUnlistedRunningSession = newlyRunning.some(
       (id) => !allSessions.some((session) => session.id === id),
     );
+    // Not forced: a run's agent_end has already invalidated the server's list,
+    // and a forced rescan here, in every tab not showing that session, bumped
+    // the version again and made all the others reload once more.
     if (completedInBackground.length > 0 || hasUnlistedRunningSession) {
-      loadSessions(false, true);
+      void loadSessions();
     }
     if (completedWithNotifications.length > 0) {
       onBackgroundTaskDone?.();
@@ -1091,6 +1110,27 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     if (allSessions.length === 0 || skipInitialProjectSelection) return;
 
+    // A child session is shown inside its parent's row and is deliberately not
+    // part of the session catalogue (deriving it there would mean scanning the
+    // whole store). A link to one therefore resolves through its family root's
+    // child route instead of the list.
+    const restoreLinkedChild = async (): Promise<SessionInfo | null> => {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(initialSessionId!)}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) return null;
+      const detail = await response.json() as { info?: SessionInfo };
+      const row = detail.info;
+      if (!row || row.relation?.kind !== "subagent") return null;
+      const rootId = familyRootIdFor(allSessions, row);
+      const children = await fetch(`/api/sessions/${encodeURIComponent(rootId)}/children`, {
+        cache: "no-store",
+      });
+      if (!children.ok) return null;
+      const body = await children.json() as { sessions?: SessionInfo[] };
+      return body.sessions?.find((child) => child.id === initialSessionId) ?? null;
+    };
+
     if (selectedCwd === null) {
       // If restoring a session, set cwd to match that session
       if (initialSessionId && !restoredRef.current) {
@@ -1101,13 +1141,42 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           onSelectSession(target, true);
           return;
         }
-        // Session not found — notify parent so it can show the placeholder
-        onInitialRestoreDone?.();
+        const reportMissing = () => {
+          onInitialRestoreDone?.();
+          if (initialSessionLinked) showToast(t("sidebar.sessionNotFound"));
+        };
+        // A link that names nothing still leaves the sidebar a workspace to
+        // show, exactly as the no-link path below does.
+        const selectRecentProject = () => {
+          const recent = getRecentProjects(allSessions);
+          if (recent.length > 0) setSelectedCwd(recent[0].root);
+        };
+        if (!initialSessionLinked) {
+          reportMissing();
+        } else {
+          void restoreLinkedChild()
+            .then((linked) => {
+              if (!linked) { reportMissing(); selectRecentProject(); return; }
+              // A child runs in its own directory; the files tab and the project
+              // identity belong to the workspace its parent uses, which the
+              // child row reports as projectRoot. Adopting the raw execution cwd
+              // would look like a project switch once /api/worktrees resolves,
+              // closing the freshly restored session and clearing the link.
+              setSelectedCwd(linked.projectRoot ?? linked.cwd);
+              // The tree marks a family selected through its members, and a
+              // child is not in the catalogue, so the one row has to join the
+              // list for its parent's row to show the selection.
+              setAllSessions((current) => appendSessionRow(current, linked));
+              onSelectSession(linked, true);
+            })
+            .catch(() => { reportMissing(); selectRecentProject(); });
+          return;
+        }
       }
       const projects = getRecentProjects(allSessions);
       if (projects.length > 0) setSelectedCwd(projects[0].root);
     }
-  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone]);
+  }, [allSessions, selectedCwd, initialSessionId, initialSessionLinked, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone, showToast, t]);
 
   // Prefer an exact UI selection while a refetch is in flight. Once the
   // response catches up, the server-resolved path handles Windows case and
@@ -1480,11 +1549,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     saveGroupExpansion(next);
     setKeptOpenGroups((kept) => forgetKeptOpenGroups(kept, keys));
     setMoreShown((shown) => forgetShownMoreOfFolded(shown, next, keys));
-  }, []);
-
-  const showToast = useCallback((message: string, actions: SidebarToastAction[] = [], tail?: string) => {
-    toastIdRef.current += 1;
-    setToast({ id: toastIdRef.current, message, ...(tail ? { tail } : {}), actions });
   }, []);
 
   /**
@@ -1904,9 +1968,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
   }, [loadSessions, showToast, t]);
 
+  // Open in new tab (the row menu's T): the row's session in a browser tab of
+  // its own, by the same link its title carries. This tab's selection, cwd and
+  // file tabs stay as they are, and nothing is asked of the server here: the
+  // new tab loads the session as a reload would. Synchronous inside the menu's
+  // click or key press, so the browser counts it as the user's and does not
+  // block it as a popup. Its return value says nothing: with noopener the
+  // browser returns null whether the tab opened or not.
+  const openFamilyInNewTab = useCallback((family: SessionFamily) => {
+    if (family.root.transient) return;
+    window.open(sessionDeepLink(family.root.id), "_blank", "noopener,noreferrer");
+  }, []);
+
   const runSessionAction = (id: SessionMenuActionId, row: SessionRow, shiftKey: boolean) => {
     const { family } = row;
     switch (id) {
+      case "open-new-tab": openFamilyInNewTab(family); break;
       case "pin": setFamilyPinned(family, true); break;
       case "unpin": setFamilyPinned(family, false); break;
       case "rename": startRename(family); break;
@@ -1981,6 +2058,42 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       return family ? [family] : [];
     }));
   }, [archiveFamilies, familyByRootId, treeSelectionInput]);
+
+  // A project's "Delete all sessions…": the menu turns into its question,
+  // focus on Cancel (the sheet's on a phone), so Enter deletes nothing; Cancel
+  // goes back to the list. Delete closes the menu and sends the families the
+  // question counts at that moment, pinned and archived ones included,
+  // running ones kept (the server also keeps one that started since); toasts
+  // say how it went. One run per project at a time.
+  const askProjectDelete = useCallback((projectKey: string, askDelete: boolean) => {
+    setMenu((current) => (current?.kind === "group" && current.project.key === projectKey ? { ...current, askDelete } : current));
+  }, []);
+
+  const deletingProjectsRef = useRef(new Set<string>());
+  const deleteAllProjectSessions = useCallback(async (project: SidebarProject) => {
+    setMenu(null);
+    const { ids } = familiesToDelete(treeSelectionInput, project.key);
+    if (ids.length === 0 || deletingProjectsRef.current.has(project.key)) return;
+    deletingProjectsRef.current.add(project.key);
+    showToast(t("sidebar.deletingSessions"));
+    try {
+      const outcome = await deleteProjectSessions(ids, fetch);
+      for (const id of outcome.deleted) onSessionDeleted?.(id);
+      // The group goes with its last session unless it is current or pinned:
+      // focus that fell to the page with it goes to the tab.
+      void loadSessions().then(() => focusAfterCommit(() => groupHeaderButton(project.key)));
+      if (outcome.error !== null) {
+        showToast(t("sidebar.deleteFailed", { error: outcome.error }));
+        return;
+      }
+      const count = outcome.deletedRoots.length;
+      const parts = [count === 1 ? t("sidebar.deletedOneToast") : t("sidebar.deletedManyToast", { count })];
+      if (outcome.running.length > 0) parts.push(t("sidebar.keptRunningToast", { count: outcome.running.length }));
+      showToast(parts.join(" · "));
+    } finally {
+      deletingProjectsRef.current.delete(project.key);
+    }
+  }, [focusAfterCommit, groupHeaderButton, loadSessions, onSessionDeleted, showToast, t, treeSelectionInput]);
 
   // A group's "+": a new session at once. The current project starts in the
   // sidebar's worktree, another one in its root (the main checkout); the bar
@@ -2130,6 +2243,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   const groupMenuItems = (project: SidebarProject, olderCount: number): SidebarMenuItem[] => {
     const archivedCount = archiveIndex.countByProject.get(project.key) ?? 0;
+    const deletable = familiesToDelete(treeSelectionInput, project.key);
     // Within the project's band; disabled at its edges.
     const up = adjacentProjectMove(model.projects, project.key, "up");
     const down = adjacentProjectMove(model.projects, project.key, "down");
@@ -2213,7 +2327,52 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         disabled: archivedCount === 0,
         onSelect: openArchiveView,
       },
+      { type: "separator", id: "separator-delete" },
+      {
+        type: "item",
+        id: "delete-all",
+        label: t("sidebar.deleteProjectSessions", { count: deletable.ids.length }),
+        icon: <TrashIcon />,
+        danger: true,
+        disabled: deletable.ids.length === 0,
+        onSelect: ({ keepOpen }) => {
+          keepOpen();
+          askProjectDelete(project.key, true);
+        },
+      },
     ];
+  };
+
+  // The question behind "Delete all sessions…"; its counts are live.
+  const projectDeleteBody = (project: SidebarProject): ReactNode => {
+    const { ids, running } = familiesToDelete(treeSelectionInput, project.key);
+    return (
+      <div className="sidebar-menu-question">
+        <div className="sidebar-menu-header" title={project.root}>{t("sidebar.deleteProjectSessionsHeading", { name: project.name })}</div>
+        <p className="sidebar-menu-question-text">{t("sidebar.deleteProjectSessionsMessage")}</p>
+        {running > 0 && <p className="sidebar-menu-question-text">{t("sidebar.deleteProjectSessionsRunning", { count: running })}</p>}
+        <div className="sidebar-menu-question-buttons">
+          <button
+            type="button"
+            className="sidebar-menu-question-confirm"
+            disabled={ids.length === 0}
+            onClick={() => { void deleteAllProjectSessions(project); }}
+          >
+            {t("sidebar.deleteCount", { count: ids.length })}
+          </button>
+          {!isMobile && (
+            <button
+              type="button"
+              className="sidebar-menu-question-cancel"
+              data-sidebar-menu-autofocus=""
+              onClick={() => askProjectDelete(project.key, false)}
+            >
+              {t("sidebar.cancel")}
+            </button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   let menuTitle: string | undefined;
@@ -2221,6 +2380,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // Room for "Archive sessions older than 7 days · N".
   let menuWidth: number | undefined;
   let menuItems: SidebarMenuItem[] | undefined;
+  let menuBody: ReactNode = null;
   if (menu?.kind === "row" && menuRow) {
     menuTitle = sessionRowTitle(menuRow.family.root);
     menuLabel = t("sidebar.sessionActions");
@@ -2231,6 +2391,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     menuTitle = project.name;
     menuLabel = t("sidebar.projectActions", { name: project.name });
     menuItems = groupMenuItems(project, menu.olderCount);
+    if (menu.askDelete) menuBody = projectDeleteBody(project);
     menuWidth = 264;
   }
 
@@ -2766,10 +2927,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         title={menuTitle}
         items={menuItems}
         cancelLabel={t("sidebar.cancel")}
+        focusCancel={menuBody !== null}
         onClose={closeMenu}
         returnFocusTo={menu?.opener ?? null}
         width={menuWidth}
-      />
+      >
+        {menuBody}
+      </SidebarMenu>
       <SidebarToast toast={toast} onDismiss={() => setToast(null)} dismissLabel={t("sidebar.dismiss")} />
     </div>
   );
