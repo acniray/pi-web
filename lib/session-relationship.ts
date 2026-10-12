@@ -72,8 +72,11 @@ export function identifyContainedSession(filePath: string): StoredSessionOwner |
   const store = resolve(getAgentDir(), "sessions");
   for (let dir = dirname(resolve(filePath)), depth = 0;
     depth < MAX_CONTAINER_DEPTH && isInside(store, dir);
-    dir = dirname(dir), depth++) {
+    depth++) {
     const parentPath = `${dir}.jsonl`;
+    // Keep imported calls out of the for-update expression: Turbopack 16.3.8
+    // leaves dirname unbound there. Advance before any continue, as before.
+    dir = dirname(dir);
     const parent = readStoredHeader(parentPath);
     if (!parent) continue;
     child ??= readStoredHeader(filePath);
