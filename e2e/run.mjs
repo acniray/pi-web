@@ -14,8 +14,10 @@ import { checkExtensionDialogSizing, checkExtensionDialogs, extensionSource } fr
 import { checkChatAppearance } from "./chat-appearance.mjs";
 import { checkCodeBackground } from "./code-background.mjs";
 import { checkModelDiscovery } from "./model-discovery.mjs";
+import { checkModelContext } from "./model-context.mjs";
 import { checkFilesPlacement, showSidebarSessions } from "./sidebar.mjs";
 import { checkSessionNavigation } from "./session-navigation.mjs";
+import { checkProjectNavigation, createProjectNavigationFixtures } from "./project-navigation.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const mode = process.env.E2E_SERVER_MODE || "dev";
@@ -207,6 +209,8 @@ try {
     parentSession: join(sessionDir, `2026-08-23T00-00-00-000Z_${LONG}.jsonl`),
   }, [message("f1", null, "user", "E2E user fork prompt")]);
 
+  const projectNavigation = createProjectNavigationFixtures({ agentDir, sessionDir, timestamp });
+
   const probe = createServer();
   probe.listen(0, "127.0.0.1");
   await once(probe, "listening");
@@ -248,7 +252,7 @@ try {
     if (response?.ok) {
       const { sessions } = await response.json();
       assert.deepEqual(sessions.map((session) => session.id).sort(),
-        [LONG, BRANCH, RICH, COMPACTED, APPEND, CODE_BACKGROUND, NESTED_PARENT, NATIVE_SUBAGENT, USER_FORK].sort());
+        [LONG, BRANCH, RICH, COMPACTED, APPEND, CODE_BACKGROUND, NESTED_PARENT, NATIVE_SUBAGENT, USER_FORK, projectNavigation.id].sort());
       break;
     }
     assert.ok(Date.now() < deadline, "Server readiness timed out; see server.log");
@@ -648,6 +652,7 @@ try {
       console.log("PASS: files below the sessions by default, tabs from Settings and back");
       await checkModelDiscovery(page);
     }
+    await checkModelContext(page);
     await page.goto(`${base}/?session=${CODE_BACKGROUND}`, { waitUntil: "domcontentloaded" });
     await page.locator(".markdown-code-block pre").waitFor();
     await checkCodeBackground(page);
@@ -672,6 +677,7 @@ try {
       assert.ok(response.ok, `DELETE session ${id} -> ${response.status}`);
     },
   });
+  await checkProjectNavigation({ browser, base, artifacts, fixture: projectNavigation, otherSessionId: BRANCH, api, post });
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
