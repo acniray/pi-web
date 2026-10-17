@@ -10,15 +10,25 @@ export interface SessionLivenessProvider {
   isActive(): boolean;
 }
 
-interface SessionIdentity {
+export interface SessionIdentity {
   sessionId: string;
   sessionFile?: string;
 }
+
+/** pi-web's own browser keep-alive; it says a tab has the session open, not that work is running. */
+const LEASE_PROVIDER_NAME = "pi-web-selected-session";
 
 interface SessionLivenessRegistry {
   version: typeof SESSION_LIVENESS_PROTOCOL_VERSION;
   register(provider: SessionLivenessProvider): () => void;
   hasActiveProvider(session: SessionIdentity): boolean;
+  // Additive queries at the same protocol version: an extension registered
+  // before this file changed (or a registry left by a hot reload) may not have
+  // them, so callers must treat their absence as "no work providers".
+  /** Whether a work provider (anything but pi-web's own browse lease) says this session is busy. */
+  hasActiveWorkProvider?(session: SessionIdentity): boolean;
+  /** The session ids whose work providers report activity right now. */
+  activeWorkSessionIds?(): string[];
 }
 
 export interface SessionLivenessLease {
@@ -58,6 +68,29 @@ function validateProvider(provider: SessionLivenessProvider): void {
 function createRegistry(): SessionLivenessRegistry {
   const providers = new Map<symbol, SessionLivenessProvider>();
 
+  function matchesSession(provider: SessionLivenessProvider, session: SessionIdentity): boolean {
+    const identities = new Set([session.sessionId, session.sessionFile].filter((value): value is string => Boolean(value)));
+    return identities.has(provider.sessionId) || Boolean(provider.sessionFile && identities.has(provider.sessionFile));
+  }
+
+  function providerIsActive(provider: SessionLivenessProvider): boolean {
+    try {
+      const active = provider.isActive();
+      if (typeof active !== "boolean") {
+        throw new Error("isActive() must return a boolean");
+      }
+      return active;
+    } catch (error) {
+      console.error(`[pi-web] Session liveness provider '${provider.name}' failed; preserving the session:`, error);
+      return true;
+    }
+  }
+
+  /** Work providers are every registered provider except pi-web's own browse lease. */
+  function workProviders(): SessionLivenessProvider[] {
+    return [...providers.values()].filter((provider) => provider.name !== LEASE_PROVIDER_NAME);
+  }
+
   return {
     version: SESSION_LIVENESS_PROTOCOL_VERSION,
     register(provider) {
@@ -72,23 +105,25 @@ function createRegistry(): SessionLivenessRegistry {
       };
     },
     hasActiveProvider(session) {
-      const identities = new Set([session.sessionId, session.sessionFile].filter((value): value is string => Boolean(value)));
       for (const provider of providers.values()) {
-        if (!identities.has(provider.sessionId) && (!provider.sessionFile || !identities.has(provider.sessionFile))) {
-          continue;
-        }
-        try {
-          const active = provider.isActive();
-          if (typeof active !== "boolean") {
-            throw new Error("isActive() must return a boolean");
-          }
-          if (active) return true;
-        } catch (error) {
-          console.error(`[pi-web] Session liveness provider '${provider.name}' failed; preserving the session:`, error);
-          return true;
-        }
+        if (!matchesSession(provider, session)) continue;
+        if (providerIsActive(provider)) return true;
       }
       return false;
+    },
+    hasActiveWorkProvider(session) {
+      for (const provider of workProviders()) {
+        if (!matchesSession(provider, session)) continue;
+        if (providerIsActive(provider)) return true;
+      }
+      return false;
+    },
+    activeWorkSessionIds() {
+      const ids = new Set<string>();
+      for (const provider of workProviders()) {
+        if (providerIsActive(provider)) ids.add(provider.sessionId);
+      }
+      return [...ids];
     },
   };
 }
@@ -137,7 +172,7 @@ function scheduleLeaseExpiry(lease: LeaseRecord): void {
 export function acquireSessionLivenessLease(sessionId: string): SessionLivenessLease {
   const leases = getLeaseStore();
   const providerRelease = registerSessionLivenessProvider({
-    name: "pi-web-selected-session",
+    name: LEASE_PROVIDER_NAME,
     sessionId,
     isActive: () => !lease.released && lease.expiresAt > Date.now(),
   });
@@ -196,4 +231,21 @@ export function registerSessionLivenessProvider(provider: SessionLivenessProvide
 
 export function hasActiveSessionLivenessProvider(session: SessionIdentity): boolean {
   return registry.hasActiveProvider(session);
+}
+
+/**
+ * Whether an extension reports unfinished work (a detached child run, a pending
+ * result) for this session. pi-web's own browse lease never counts: every open
+ * tab would otherwise look busy. Used for the session list's working state, not
+ * for prompt, awaiting-input or completion-notification decisions.
+ */
+export function hasActiveWorkProvider(session: SessionIdentity): boolean {
+  const active = registry.hasActiveWorkProvider;
+  return typeof active === "function" ? active.call(registry, session) : false;
+}
+
+/** The session ids with live extension work; empty on a registry without the query. */
+export function getActiveWorkSessionIds(): string[] {
+  const ids = registry.activeWorkSessionIds;
+  return typeof ids === "function" ? ids.call(registry) : [];
 }

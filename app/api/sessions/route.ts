@@ -13,6 +13,7 @@ import {
   getRpcSessionInfos,
   getRunningRpcSessionIds,
 } from "@/lib/rpc-manager";
+import { getActiveWorkSessionIds } from "@/lib/session-liveness";
 import { startServerPerf } from "@/lib/perf";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,7 @@ export async function GET(req: Request) {
         sessions,
         sessionListVersion,
         runningSessionIds: getRunningRpcSessionIds(),
+        subagentWorkSessionIds: getActiveWorkSessionIds(),
         awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
         completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
       },
@@ -53,6 +55,7 @@ export async function GET(req: Request) {
         sessions,
         sessionListVersion,
         runningSessionIds: getRunningRpcSessionIds(),
+        subagentWorkSessionIds: getActiveWorkSessionIds(),
         awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
         completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
       },

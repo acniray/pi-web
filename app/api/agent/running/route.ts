@@ -5,6 +5,7 @@ import {
   getCompletionNotificationSuppressedRpcSessionIds,
   getRunningRpcSessionIds,
 } from "@/lib/rpc-manager";
+import { getActiveWorkSessionIds } from "@/lib/session-liveness";
 import { getSessionUiStateRevision } from "@/lib/session-ui-state";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,10 @@ export async function GET() {
     {
       sessionListVersion: getSessionListVersion(),
       runningSessionIds: getRunningRpcSessionIds(),
+      // Work reported by extensions (a detached child still running). Kept
+      // apart from runningSessionIds so prompt/completion decisions stay on
+      // pi-web's own runs; the sidebar reads it for its working indicator.
+      subagentWorkSessionIds: getActiveWorkSessionIds(),
       awaitingInputSessionIds: getAwaitingInputRpcSessionIds(),
       completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
       sessionUiStateRevision: getSessionUiStateRevision(),

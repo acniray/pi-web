@@ -536,6 +536,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [fileManager, setFileManager] = useState<FileManagerAvailability | null>(null);
   const [fileManagerError, setFileManagerError] = useState<string | null>(null);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  const [subagentWorkSessionIds, setSubagentWorkSessionIds] = useState<Set<string>>(() => new Set());
   const [awaitingInputSessionIds, setAwaitingInputSessionIds] = useState<Set<string>>(() => new Set());
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
   const previousRunningSessionIdsRef = useRef<Set<string>>(new Set());
@@ -547,6 +548,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const detailsHydrationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
+
+  // The rows' working state: pi-web's own runs plus work an extension reports
+  // (a detached child that outlives the parent's turn). The second set is
+  // display-only — prompt, awaiting-input and completion-notification logic
+  // keep reading runningSessionIds, so an extension's own notification is not
+  // duplicated and an idle parent is not treated as streaming.
+  const listRunningIds = useMemo(() => {
+    if (subagentWorkSessionIds.size === 0) return runningSessionIds;
+    const next = new Set(runningSessionIds);
+    for (const id of subagentWorkSessionIds) next.add(id);
+    return next;
+  }, [runningSessionIds, subagentWorkSessionIds]);
 
   // The files below the sessions (desktop, by default: both in view, a
   // separator between them, the files section foldable to its header row),
@@ -748,6 +761,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         sessions: SessionInfo[];
         sessionListVersion: number;
         runningSessionIds?: string[];
+        subagentWorkSessionIds?: string[];
         awaitingInputSessionIds?: string[];
         completionNotificationSuppressedSessionIds?: string[];
       };
@@ -762,6 +776,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           data.completionNotificationSuppressedSessionIds ?? [],
         );
         setRunningSessionIds((previous) => sameIdsOr(previous, data.runningSessionIds ?? []));
+        setSubagentWorkSessionIds((previous) => sameIdsOr(previous, data.subagentWorkSessionIds ?? []));
         setAwaitingInputSessionIds((previous) => sameIdsOr(previous, data.awaitingInputSessionIds ?? []));
       }
       // Drop markers for deleted sessions and for subagents, whose completion
@@ -905,6 +920,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         const data = await res.json() as {
           sessionListVersion: number;
           runningSessionIds?: string[];
+          subagentWorkSessionIds?: string[];
           awaitingInputSessionIds?: string[];
           completionNotificationSuppressedSessionIds?: string[];
           sessionUiStateRevision?: number | null;
@@ -915,6 +931,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           data.completionNotificationSuppressedSessionIds ?? [],
         );
         setRunningSessionIds((previous) => sameIdsOr(previous, data.runningSessionIds ?? []));
+        setSubagentWorkSessionIds((previous) => sameIdsOr(previous, data.subagentWorkSessionIds ?? []));
         setAwaitingInputSessionIds((previous) => sameIdsOr(previous, data.awaitingInputSessionIds ?? []));
         // Pins and archive changed in another window: reload them.
         noteUiRevision(data.sessionUiStateRevision);
@@ -1404,13 +1421,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const ids = new Set<string>();
     const countByProject = new Map<string, number>();
     for (const family of sessionFamilies) {
-      if (!isFamilyArchived(family, uiState, runningSessionIds)) continue;
+      if (!isFamilyArchived(family, uiState, listRunningIds)) continue;
       for (const id of familyIds(family)) ids.add(id);
       const key = workspaceKeyOf(family.root);
       countByProject.set(key, (countByProject.get(key) ?? 0) + 1);
     }
     return { ids, countByProject };
-  }, [sessionFamilies, uiState, runningSessionIds]);
+  }, [sessionFamilies, uiState, listRunningIds]);
 
   // Per-project activity counts (running / unread) for the files tab's project menu.
   // Uses the same stable server key as the project list and filtering. An
@@ -1418,10 +1435,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const projectActivity = useMemo(
     () => getProjectActivity(
       archiveIndex.ids.size === 0 ? allSessions : allSessions.filter((session) => !archiveIndex.ids.has(session.id)),
-      runningSessionIds,
+      listRunningIds,
       unreadSessionIds,
     ),
-    [allSessions, archiveIndex, runningSessionIds, unreadSessionIds],
+    [allSessions, archiveIndex, listRunningIds, unreadSessionIds],
   );
 
   const showWorktreeSwitcher = Boolean(
@@ -1469,7 +1486,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const model = useMemo(() => buildSessionTree({
     sessions: allSessions,
     uiState,
-    runningIds: runningSessionIds,
+    runningIds: listRunningIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
     selectedSessionId,
@@ -1477,7 +1494,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     groupExpansion: shownGroupExpansion,
     moreShown,
     pinnedCollapsed,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
+  }), [allSessions, uiState, listRunningIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
   // Built while the archive view is rendered, its way out included: it
   // leaves as it was, not empty.
   const archiveMounted = archiveMotion.archiveMounted;
@@ -1485,13 +1502,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const archiveRows = useMemo(() => (archiveMounted ? buildArchiveRows({
     sessions: allSessions,
     uiState,
-    runningIds: runningSessionIds,
+    runningIds: listRunningIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
     selectedSessionId,
     currentProject,
     collapsed: archiveCollapsedSet,
-  }) : []), [archiveMounted, allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
+  }) : []), [archiveMounted, allSessions, uiState, listRunningIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
   // The archive's projects, top to bottom, folded or not.
   const archiveGroups = useMemo(
     () => archiveRows.flatMap((row) => (row.kind === "archive-group" ? [row] : [])),
@@ -1829,9 +1846,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // The row's archive button. A running family would come straight back, so
   // it is not archived (the row offers no button for it either).
   const archiveFamily = useCallback((family: SessionFamily) => {
-    if (familyIds(family).some((id) => runningSessionIds.has(id))) return;
+    if (familyIds(family).some((id) => listRunningIds.has(id))) return;
     archiveFamilies([family]);
-  }, [archiveFamilies, runningSessionIds]);
+  }, [archiveFamilies, listRunningIds]);
 
   // Out of the archive: one row's Restore, or an archive menu's Restore all
   // (in parts, as a bulk archive goes; Undo after them, in order).
@@ -2095,11 +2112,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const treeSelectionInput = useMemo(() => ({
     sessions: allSessions,
     uiState,
-    runningIds: runningSessionIds,
+    runningIds: listRunningIds,
     awaitingIds: awaitingInputSessionIds,
     unreadIds: unreadSessionIds,
     selectedSessionId,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId]);
+  }), [allSessions, uiState, listRunningIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId]);
 
   const handleGroupMenu = useCallback((project: SidebarProject, opener: HTMLElement) => {
     const olderCount = familiesToArchive(treeSelectionInput, project.key, ARCHIVE_OLDER_THAN_MS, Date.now()).length;
