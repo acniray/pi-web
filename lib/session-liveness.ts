@@ -22,13 +22,11 @@ interface SessionLivenessRegistry {
   version: typeof SESSION_LIVENESS_PROTOCOL_VERSION;
   register(provider: SessionLivenessProvider): () => void;
   hasActiveProvider(session: SessionIdentity): boolean;
-  // Additive queries at the same protocol version: an extension registered
+  // Additive query at the same protocol version: an extension registered
   // before this file changed (or a registry left by a hot reload) may not have
-  // them, so callers must treat their absence as "no work providers".
-  /** Whether a work provider (anything but pi-web's own browse lease) says this session is busy. */
-  hasActiveWorkProvider?(session: SessionIdentity): boolean;
-  /** The session ids whose work providers report activity right now. */
-  activeWorkSessionIds?(): string[];
+  // it, so callers must treat its absence as "no work providers".
+  /** Sessions a work provider (anything but pi-web's own browse lease) reports as busy. */
+  activeWorkSessions?(): SessionIdentity[];
 }
 
 export interface SessionLivenessLease {
@@ -111,19 +109,17 @@ function createRegistry(): SessionLivenessRegistry {
       }
       return false;
     },
-    hasActiveWorkProvider(session) {
+    activeWorkSessions() {
+      const sessions = new Map<string, SessionIdentity>();
       for (const provider of workProviders()) {
-        if (!matchesSession(provider, session)) continue;
-        if (providerIsActive(provider)) return true;
+        if (providerIsActive(provider) && !sessions.has(provider.sessionId)) {
+          sessions.set(provider.sessionId, {
+            sessionId: provider.sessionId,
+            ...(provider.sessionFile ? { sessionFile: provider.sessionFile } : {}),
+          });
+        }
       }
-      return false;
-    },
-    activeWorkSessionIds() {
-      const ids = new Set<string>();
-      for (const provider of workProviders()) {
-        if (providerIsActive(provider)) ids.add(provider.sessionId);
-      }
-      return [...ids];
+      return [...sessions.values()];
     },
   };
 }
@@ -234,18 +230,13 @@ export function hasActiveSessionLivenessProvider(session: SessionIdentity): bool
 }
 
 /**
- * Whether an extension reports unfinished work (a detached child run, a pending
- * result) for this session. pi-web's own browse lease never counts: every open
- * tab would otherwise look busy. Used for the session list's working state, not
- * for prompt, awaiting-input or completion-notification decisions.
+ * Sessions an extension reports as busy through the shared registry. pi-web's
+ * own browse lease never counts: every open tab would otherwise look busy.
+ * This is a candidate list, not proof of work — a provider's `isActive()` also
+ * covers over-but-undelivered work, so callers confirm it (see
+ * `lib/subagent-work.ts`).
  */
-export function hasActiveWorkProvider(session: SessionIdentity): boolean {
-  const active = registry.hasActiveWorkProvider;
-  return typeof active === "function" ? active.call(registry, session) : false;
-}
-
-/** The session ids with live extension work; empty on a registry without the query. */
-export function getActiveWorkSessionIds(): string[] {
-  const ids = registry.activeWorkSessionIds;
-  return typeof ids === "function" ? ids.call(registry) : [];
+export function getActiveWorkSessions(): SessionIdentity[] {
+  const sessions = registry.activeWorkSessions;
+  return typeof sessions === "function" ? sessions.call(registry) : [];
 }

@@ -187,6 +187,12 @@ export async function listSessionChildren(parentId: string, parentPath: string):
   childrenDiscovery.set(cacheKey, { signature, sessions });
   return sessions;
 }
+/** Whether any child of this parent is still running, read from its run status documents. */
+export async function hasRunningSessionChild(parentId: string, parentPath: string): Promise<boolean> {
+  const children = await listSessionChildren(parentId, parentPath);
+  return children.some((child) => child.relation?.kind === 'subagent' && child.relation.status === 'running');
+}
+
 /** The cached rows are shared, read-only values; callers must not mutate them. */
 async function discoverSessionChildren(parentId: string, parentPath: string, paths: Set<string>, references: Map<string, SessionReference>): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = [];
